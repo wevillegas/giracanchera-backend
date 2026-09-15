@@ -1,11 +1,71 @@
 import User from '../models/User.js';
 
+export const getProfile = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id)
+      .select('-password')
+      .populate('clubHincha', 'name logoUrl')
+      .populate('wantToVisit', 'name imageUrl location capacity mainClub');
+
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateProfile = async (req, res, next) => {
+  try {
+    const { nombre, bio, avatarUrl, clubHincha } = req.body;
+    const updates = {};
+
+    if (nombre !== undefined) {
+      if (typeof nombre !== 'string') {
+        return res.status(400).json({ message: 'nombre debe ser texto' });
+      }
+      updates.nombre = nombre.trim();
+    }
+
+    if (bio !== undefined) {
+      if (typeof bio !== 'string') {
+        return res.status(400).json({ message: 'bio debe ser texto' });
+      }
+      updates.bio = bio.trim();
+    }
+
+    if (avatarUrl !== undefined) {
+      if (typeof avatarUrl !== 'string') {
+        return res.status(400).json({ message: 'avatarUrl debe ser texto' });
+      }
+      updates.avatarUrl = avatarUrl.trim();
+    }
+
+    if (req.file) {
+      updates.avatarUrl = req.file.path;
+    }
+
+    if (clubHincha !== undefined) {
+      updates.clubHincha = clubHincha || null;
+    }
+
+    const user = await User.findByIdAndUpdate(req.user._id, updates, {
+      new: true,
+      runValidators: true,
+    })
+      .select('-password')
+      .populate('clubHincha', 'name logoUrl');
+
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getPublicProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.params.id)
       .select('-email')
-      .populate('profile.favoriteClub', 'name shortName logoUrl')
-      .populate('friends', 'username profile.avatarUrl')
+      .populate('clubHincha', 'name shortName logoUrl')
+      .populate('friends', 'username avatarUrl')
       .populate('wantToVisit', 'name location imageUrl');
 
     if (!user) {

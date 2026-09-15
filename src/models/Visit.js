@@ -13,7 +13,7 @@ const visitSchema = new mongoose.Schema(
       required: true,
     },
     visitDate: { type: Date, required: true },
-    rating: { type: Number, min: 1, max: 5, required: true },
+    rating: { type: Number, min: 1, max: 10, required: true },
     reviewText: { type: String, default: '' },
     images: [{ type: String }],
     matchDetails: {
@@ -25,6 +25,7 @@ const visitSchema = new mongoose.Schema(
       ticket: { type: Number, default: 0 },
       transport: { type: Number, default: 0 },
       food: { type: Number, default: 0 },
+      parking: { type: Number, default: 0 },
       currency: { type: String, default: 'ARS' },
     },
   },

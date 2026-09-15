@@ -31,7 +31,7 @@ export const getStadiumById = async (req, res, next) => {
     }
 
     const visits = await Visit.find({ stadium: stadium._id })
-      .populate('user', 'username profile.avatarUrl')
+      .populate('user', 'username avatarUrl')
       .sort({ visitDate: -1 });
 
     res.json({ stadium, visits });

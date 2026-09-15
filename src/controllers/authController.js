@@ -7,7 +7,7 @@ const generateToken = (id) => {
 
 export const register = async (req, res, next) => {
   try {
-    const { username, email, password } = req.body;
+    const { nombre, username, email, password, fechaNacimiento, clubHincha } = req.body;
 
     if (!username || !email || !password) {
       return res.status(400).json({ message: 'Faltan campos obligatorios' });
@@ -18,7 +18,15 @@ export const register = async (req, res, next) => {
       return res.status(400).json({ message: 'El usuario o email ya está registrado' });
     }
 
-    const user = await User.create({ username, email, password });
+    const user = await User.create({
+      nombre,
+      username,
+      email,
+      password,
+      fechaNacimiento,
+      clubHincha,
+    });
+    await user.populate('clubHincha', 'name logoUrl');
 
     res.status(201).json({
       user,
@@ -31,16 +39,17 @@ export const register = async (req, res, next) => {
 
 export const login = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { email, username, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ message: 'Email y contraseña son obligatorios' });
+    if ((!email && !username) || !password) {
+      return res.status(400).json({ message: 'Email/usuario y contraseña son obligatorios' });
     }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne(email ? { email } : { username });
     if (!user || !(await user.comparePassword(password))) {
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
+    await user.populate('clubHincha', 'name logoUrl');
 
     res.json({
       user,
@@ -54,8 +63,8 @@ export const login = async (req, res, next) => {
 export const getMe = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id)
-      .populate('profile.favoriteClub')
-      .populate('friends', 'username profile.avatarUrl')
+      .populate('clubHincha')
+      .populate('friends', 'username avatarUrl')
       .populate('wantToVisit', 'name location');
 
     res.json(user);
