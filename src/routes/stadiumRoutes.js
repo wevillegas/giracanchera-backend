@@ -4,12 +4,12 @@ import {
   createStadium,
   getStadiumById,
 } from '../controllers/stadiumController.js';
-import { protect } from '../middlewares/authMiddleware.js';
+import { protect, adminOnly } from '../middlewares/authMiddleware.js';
 
 const router = Router();
 
 router.get('/', getStadiums);
-router.post('/', protect, createStadium);
+router.post('/', protect, adminOnly, createStadium);
 router.get('/:id', getStadiumById);
 
 export default router;

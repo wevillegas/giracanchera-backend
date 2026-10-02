@@ -5,7 +5,8 @@ export const getProfile = async (req, res, next) => {
     const user = await User.findById(req.user._id)
       .select('-password')
       .populate('clubHincha', 'name logoUrl')
-      .populate('wantToVisit', 'name imageUrl location capacity mainClub');
+      .populate('wantToVisit', 'name imageUrl location capacity mainClub')
+      .populate('friends', 'username avatarUrl');
 
     res.json(user);
   } catch (error) {
@@ -55,6 +56,24 @@ export const updateProfile = async (req, res, next) => {
       .populate('clubHincha', 'name logoUrl');
 
     res.json(user);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const searchUsers = async (req, res, next) => {
+  try {
+    const q = (req.query.username || '').trim();
+    if (!q) return res.json([]);
+
+    const users = await User.find({
+      username: { $regex: q, $options: 'i' },
+      _id: { $ne: req.user._id },
+    })
+      .select('username avatarUrl nombre')
+      .limit(10);
+
+    res.json(users);
   } catch (error) {
     next(error);
   }
