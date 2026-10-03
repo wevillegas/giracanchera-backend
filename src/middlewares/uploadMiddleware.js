@@ -18,6 +18,14 @@ const visitStorage = new CloudinaryStorage({
   },
 });
 
+const clubLogoStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'giracanchera/clubs',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+  },
+});
+
 export const uploadAvatar = multer({
   storage: avatarStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -25,5 +33,10 @@ export const uploadAvatar = multer({
 
 export const uploadVisitPhotos = multer({
   storage: visitStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+export const uploadClubLogo = multer({
+  storage: clubLogoStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
 });

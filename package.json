@@ -8,6 +8,7 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "seed": "node src/utils/seed.js",
+    "seed:users": "node src/utils/seedUsers.js",
     "test": "node --test \"src/**/*.test.js\""
   },
   "repository": {

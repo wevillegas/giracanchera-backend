@@ -4,10 +4,13 @@ import {
   updateProfile,
   getPublicProfile,
   toggleWantToVisit,
-  addFriend,
+  toggleFollow,
   searchUsers,
+  getAllUsers,
+  adminUpdateUser,
+  adminDeleteUser,
 } from '../controllers/userController.js';
-import { protect } from '../middlewares/authMiddleware.js';
+import { protect, adminOnly } from '../middlewares/authMiddleware.js';
 import { uploadAvatar } from '../middlewares/uploadMiddleware.js';
 
 const router = Router();
@@ -15,8 +18,11 @@ const router = Router();
 router.get('/profile', protect, getProfile);
 router.put('/profile', protect, uploadAvatar.single('avatar'), updateProfile);
 router.get('/search', protect, searchUsers);
+router.get('/admin/all', protect, adminOnly, getAllUsers);
+router.put('/admin/:id', protect, adminOnly, adminUpdateUser);
+router.delete('/admin/:id', protect, adminOnly, adminDeleteUser);
 router.get('/:id', getPublicProfile);
 router.post('/want-to-visit/:stadiumId', protect, toggleWantToVisit);
-router.post('/friends/:friendId', protect, addFriend);
+router.post('/follow/:userId', protect, toggleFollow);
 
 export default router;

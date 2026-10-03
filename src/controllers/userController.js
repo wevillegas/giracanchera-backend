@@ -1,4 +1,21 @@
 import User from '../models/User.js';
+import Visit from '../models/Visit.js';
+import Stadium from '../models/Stadium.js';
+
+// Estadios distintos que el usuario ya visitó (según sus reseñas reales en la BD),
+// más la cantidad total de reseñas cargadas (una misma cancha puede tener varias).
+async function getVisitStats(userId) {
+  const [visitedStadiumIds, visitsCount] = await Promise.all([
+    Visit.distinct('stadium', { user: userId }),
+    Visit.countDocuments({ user: userId }),
+  ]);
+
+  const visitedStadiums = await Stadium.find({ _id: { $in: visitedStadiumIds } })
+    .select('name imageUrl location')
+    .sort({ name: 1 });
+
+  return { visitedStadiums, visitedCount: visitedStadiums.length, visitsCount };
+}
 
 export const getProfile = async (req, res, next) => {
   try {
@@ -6,9 +23,14 @@ export const getProfile = async (req, res, next) => {
       .select('-password')
       .populate('clubHincha', 'name logoUrl')
       .populate('wantToVisit', 'name imageUrl location capacity mainClub')
-      .populate('friends', 'username avatarUrl');
+      .populate('following', 'username avatarUrl');
 
-    res.json(user);
+    const [followersCount, visitStats] = await Promise.all([
+      User.countDocuments({ following: req.user._id }),
+      getVisitStats(req.user._id),
+    ]);
+
+    res.json({ ...user.toJSON(), followersCount, ...visitStats });
   } catch (error) {
     next(error);
   }
@@ -84,14 +106,19 @@ export const getPublicProfile = async (req, res, next) => {
     const user = await User.findById(req.params.id)
       .select('-email')
       .populate('clubHincha', 'name shortName logoUrl')
-      .populate('friends', 'username avatarUrl')
+      .populate('following', 'username avatarUrl')
       .populate('wantToVisit', 'name location imageUrl');
 
     if (!user) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    res.json(user);
+    const [followersCount, visitStats] = await Promise.all([
+      User.countDocuments({ following: req.params.id }),
+      getVisitStats(req.params.id),
+    ]);
+
+    res.json({ ...user.toJSON(), followersCount, ...visitStats });
   } catch (error) {
     next(error);
   }
@@ -117,26 +144,98 @@ export const toggleWantToVisit = async (req, res, next) => {
   }
 };
 
-export const addFriend = async (req, res, next) => {
+export const getAllUsers = async (req, res, next) => {
   try {
-    const { friendId } = req.params;
+    const users = await User.find()
+      .select('-password')
+      .populate('clubHincha', 'name shortName')
+      .sort({ createdAt: -1 });
+
+    res.json(users);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const adminUpdateUser = async (req, res, next) => {
+  try {
+    const { nombre, username, email, rol, bio, clubHincha } = req.body;
+    const updates = {};
+
+    if (nombre !== undefined) updates.nombre = nombre.trim();
+    if (username !== undefined) updates.username = username.trim();
+    if (email !== undefined) updates.email = email.trim();
+    if (bio !== undefined) updates.bio = bio.trim();
+    if (rol !== undefined) {
+      if (!['user', 'admin'].includes(rol)) {
+        return res.status(400).json({ message: 'rol inválido' });
+      }
+      updates.rol = rol;
+    }
+    if (clubHincha !== undefined) updates.clubHincha = clubHincha || null;
+
+    const user = await User.findByIdAndUpdate(req.params.id, updates, {
+      new: true,
+      runValidators: true,
+    })
+      .select('-password')
+      .populate('clubHincha', 'name shortName');
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const adminDeleteUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (id === req.user._id.toString()) {
+      return res.status(400).json({ message: 'No podés eliminar tu propia cuenta' });
+    }
+
+    const user = await User.findByIdAndDelete(id);
+    if (!user) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+
+    await Visit.deleteMany({ user: id });
+    await User.updateMany({ following: id }, { $pull: { following: id } });
+
+    res.json({ message: 'Usuario eliminado' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const toggleFollow = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
     const user = req.user;
 
-    if (friendId === user._id.toString()) {
-      return res.status(400).json({ message: 'No podés agregarte a vos mismo' });
+    if (userId === user._id.toString()) {
+      return res.status(400).json({ message: 'No podés seguirte a vos mismo' });
     }
 
-    const friend = await User.findById(friendId);
-    if (!friend) {
-      return res.status(404).json({ message: 'Usuario a agregar no encontrado' });
+    const target = await User.findById(userId);
+    if (!target) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    if (!user.friends.some((id) => id.toString() === friendId)) {
-      user.friends.push(friendId);
-      await user.save();
+    const index = user.following.findIndex((id) => id.toString() === userId);
+    if (index === -1) {
+      user.following.push(userId);
+    } else {
+      user.following.splice(index, 1);
     }
 
-    res.json({ friends: user.friends });
+    await user.save();
+    res.json({ following: user.following });
   } catch (error) {
     next(error);
   }

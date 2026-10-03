@@ -1,4 +1,5 @@
 import Visit from '../models/Visit.js';
+import User from '../models/User.js';
 
 export const createVisit = async (req, res, next) => {
   try {
@@ -20,6 +21,8 @@ export const createVisit = async (req, res, next) => {
       matchDetails: matchDetails ? JSON.parse(matchDetails) : undefined,
       expenses: expenses ? JSON.parse(expenses) : undefined,
     });
+
+    await User.findByIdAndUpdate(req.user._id, { $pull: { wantToVisit: stadium } });
 
     res.status(201).json(visit);
   } catch (error) {

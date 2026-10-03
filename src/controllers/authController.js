@@ -64,7 +64,7 @@ export const getMe = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id)
       .populate('clubHincha')
-      .populate('friends', 'username avatarUrl')
+      .populate('following', 'username avatarUrl')
       .populate('wantToVisit', 'name location');
 
     res.json(user);
