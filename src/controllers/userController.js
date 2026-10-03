@@ -2,19 +2,15 @@ import User from '../models/User.js';
 import Visit from '../models/Visit.js';
 import Stadium from '../models/Stadium.js';
 
-// Estadios distintos que el usuario ya visitó (según sus reseñas reales en la BD),
-// más la cantidad total de reseñas cargadas (una misma cancha puede tener varias).
+// Estadios distintos que el usuario ya visitó (según sus reseñas reales en la BD)
 async function getVisitStats(userId) {
-  const [visitedStadiumIds, visitsCount] = await Promise.all([
-    Visit.distinct('stadium', { user: userId }),
-    Visit.countDocuments({ user: userId }),
-  ]);
+  const visitedStadiumIds = await Visit.distinct('stadium', { user: userId });
 
   const visitedStadiums = await Stadium.find({ _id: { $in: visitedStadiumIds } })
     .select('name imageUrl location')
     .sort({ name: 1 });
 
-  return { visitedStadiums, visitedCount: visitedStadiums.length, visitsCount };
+  return { visitedStadiums, visitedCount: visitedStadiums.length };
 }
 
 export const getProfile = async (req, res, next) => {
@@ -25,12 +21,12 @@ export const getProfile = async (req, res, next) => {
       .populate('wantToVisit', 'name imageUrl location capacity mainClub')
       .populate('following', 'username avatarUrl');
 
-    const [followersCount, visitStats] = await Promise.all([
-      User.countDocuments({ following: req.user._id }),
+    const [followers, visitStats] = await Promise.all([
+      User.find({ following: req.user._id }).select('username avatarUrl'),
       getVisitStats(req.user._id),
     ]);
 
-    res.json({ ...user.toJSON(), followersCount, ...visitStats });
+    res.json({ ...user.toJSON(), followers, followersCount: followers.length, ...visitStats });
   } catch (error) {
     next(error);
   }
@@ -113,12 +109,12 @@ export const getPublicProfile = async (req, res, next) => {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    const [followersCount, visitStats] = await Promise.all([
-      User.countDocuments({ following: req.params.id }),
+    const [followers, visitStats] = await Promise.all([
+      User.find({ following: req.params.id }).select('username avatarUrl'),
       getVisitStats(req.params.id),
     ]);
 
-    res.json({ ...user.toJSON(), followersCount, ...visitStats });
+    res.json({ ...user.toJSON(), followers, followersCount: followers.length, ...visitStats });
   } catch (error) {
     next(error);
   }

@@ -2,9 +2,15 @@ import Stadium from '../models/Stadium.js';
 import Visit from '../models/Visit.js';
 import User from '../models/User.js';
 
+// Un estadio de la provincia no tiene club dueño; el resto puede tener mainClub o quedar sin dueño
+function ownershipFields(body) {
+  if (body.ownerType === 'province') return { ...body, ownerType: 'province', mainClub: null };
+  return { ...body, ownerType: 'club' };
+}
+
 export const getStadiums = async (req, res, next) => {
   try {
-    const stadiums = await Stadium.find().populate('mainClub', 'name shortName logoUrl');
+    const stadiums = await Stadium.find().populate('mainClub', 'name shortName logoUrl location');
     res.json(stadiums);
   } catch (error) {
     next(error);
@@ -13,7 +19,7 @@ export const getStadiums = async (req, res, next) => {
 
 export const createStadium = async (req, res, next) => {
   try {
-    const stadium = await Stadium.create(req.body);
+    const stadium = await Stadium.create(ownershipFields(req.body));
     res.status(201).json(stadium);
   } catch (error) {
     next(error);
@@ -22,10 +28,10 @@ export const createStadium = async (req, res, next) => {
 
 export const updateStadium = async (req, res, next) => {
   try {
-    const stadium = await Stadium.findByIdAndUpdate(req.params.id, req.body, {
+    const stadium = await Stadium.findByIdAndUpdate(req.params.id, ownershipFields(req.body), {
       new: true,
       runValidators: true,
-    }).populate('mainClub', 'name shortName logoUrl');
+    }).populate('mainClub', 'name shortName logoUrl location');
 
     if (!stadium) {
       return res.status(404).json({ message: 'Estadio no encontrado' });
@@ -59,7 +65,7 @@ export const getStadiumById = async (req, res, next) => {
   try {
     const stadium = await Stadium.findById(req.params.id).populate(
       'mainClub',
-      'name shortName logoUrl'
+      'name shortName logoUrl location'
     );
 
     if (!stadium) {
