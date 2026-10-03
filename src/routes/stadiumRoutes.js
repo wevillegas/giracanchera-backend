@@ -7,10 +7,17 @@ import {
   getStadiumById,
 } from '../controllers/stadiumController.js';
 import { protect, adminOnly } from '../middlewares/authMiddleware.js';
+import { uploadStadiumImage } from '../middlewares/uploadMiddleware.js';
 
 const router = Router();
 
 router.get('/', getStadiums);
+router.post('/image', protect, adminOnly, uploadStadiumImage.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'Falta la imagen' });
+  }
+  res.status(201).json({ url: req.file.path });
+});
 router.post('/', protect, adminOnly, createStadium);
 router.put('/:id', protect, adminOnly, updateStadium);
 router.delete('/:id', protect, adminOnly, deleteStadium);
