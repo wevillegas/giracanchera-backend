@@ -274,6 +274,35 @@ export const deleteMe = async (req, res, next) => {
   }
 };
 
+// Reemplaza la lista de visitas anteriores del usuario (cada estadio aparece una vez)
+export const setPreviousVisits = async (req, res, next) => {
+  try {
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length > 200) {
+      return res.status(400).json({ message: 'Formato de visitas anteriores inválido' });
+    }
+
+    const seen = new Set();
+    const clean = [];
+    for (const item of items) {
+      const count = Number(item?.count);
+      if (!isText(item?.stadium) || !Number.isInteger(count) || count < 1 || count > 999) {
+        return res.status(400).json({ message: 'Cada estadio necesita una cantidad de visitas entre 1 y 999' });
+      }
+      if (seen.has(item.stadium)) {
+        return res.status(400).json({ message: 'Un estadio aparece repetido en las visitas anteriores' });
+      }
+      seen.add(item.stadium);
+      clean.push({ stadium: item.stadium, count });
+    }
+
+    const user = await User.findByIdAndUpdate(req.user._id, { previousVisits: clean }, { new: true, runValidators: true });
+    res.json({ previousVisits: user.previousVisits });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const EXPENSE_FIELDS = ['ticket', 'food', 'parking', 'transport'];
 const monthKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 
@@ -282,9 +311,14 @@ export const getMyStats = async (req, res, next) => {
   try {
     const visits = await Visit.find({ user: req.user._id })
       .select('stadium rating visitDate expenses matchDetails')
-      .populate('stadium', 'name location');
+      .populate({
+        path: 'stadium',
+        select: 'name location capacity imageUrl mainClub',
+        populate: { path: 'mainClub', select: 'name logoUrl' },
+      });
 
     const stadiumCounts = new Map();
+    const stadiumData = new Map();
     const monthCounts = new Map();
     const spendByField = Object.fromEntries(EXPENSE_FIELDS.map((f) => [f, 0]));
     let ratingSum = 0;
@@ -297,6 +331,7 @@ export const getMyStats = async (req, res, next) => {
       const current = stadiumCounts.get(stadiumId) || { name: v.stadium?.name || 'Estadio', visits: 0 };
       current.visits += 1;
       stadiumCounts.set(stadiumId, current);
+      if (v.stadium?._id && !stadiumData.has(stadiumId)) stadiumData.set(stadiumId, v.stadium);
 
       const month = monthKey(new Date(v.visitDate));
       monthCounts.set(month, (monthCounts.get(month) || 0) + 1);
@@ -310,10 +345,35 @@ export const getMyStats = async (req, res, next) => {
       EXPENSE_FIELDS.forEach((f) => { spendByField[f] += v.expenses?.[f] || 0; });
     }
 
-    const favorite = [...stadiumCounts.values()].sort((a, b) => b.visits - a.visits)[0] || null;
+    const [favoriteId, favoriteCount] = [...stadiumCounts.entries()].sort((a, b) => b[1].visits - a[1].visits)[0] || [];
+    const favorite = favoriteCount ? { ...favoriteCount, doc: stadiumData.get(favoriteId) } : null;
+
+    // Partidos de su club de hincha (según el partido cargado en cada visita)
+    const me = await User.findById(req.user._id).select('previousVisits clubHincha').populate('clubHincha', 'name');
+    const clubName = me?.clubHincha?.name || '';
+    const clubMatches = clubName
+      ? { clubName, count: visits.filter((v) => v.matchDetails?.homeTeam === clubName || v.matchDetails?.awayTeam === clubName).length }
+      : null;
+
+    // Visitas anteriores a la app: cargadas por el usuario, separadas de las reseñas
+    const previousStadiums = await Stadium.find({ _id: { $in: (me?.previousVisits || []).map((p) => p.stadium) } })
+      .select('name location');
+    const previousNames = new Map(previousStadiums.map((s) => [String(s._id), s]));
+    const previousItems = (me?.previousVisits || []).map((p) => {
+      const s = previousNames.get(String(p.stadium));
+      return {
+        stadiumId: String(p.stadium),
+        name: s?.name || 'Estadio',
+        province: s?.location?.province || s?.location?.city || '',
+        count: p.count,
+      };
+    });
+    const previous = { total: previousItems.reduce((sum, p) => sum + p.count, 0), items: previousItems };
     const topMonth = [...monthCounts.entries()].sort((a, b) => b[1] - a[1])[0];
 
     res.json({
+      clubMatches,
+      previous,
       visits: visits.length,
       stadiums: stadiumCounts.size,
       avgRating: visits.length ? Math.round((ratingSum / visits.length) * 10) / 10 : 0,
@@ -321,7 +381,17 @@ export const getMyStats = async (req, res, next) => {
       avgSpent: spentVisits ? Math.round(totalSpent / spentVisits) : 0,
       spendByField,
       matches,
-      favoriteStadium: favorite ? { name: favorite.name, visits: favorite.visits } : null,
+      favoriteStadium: favorite ? {
+        name: favorite.name,
+        visits: favorite.visits,
+        city: favorite.doc?.location?.city || '',
+        province: favorite.doc?.location?.province || '',
+        country: favorite.doc?.location?.country || '',
+        capacity: favorite.doc?.capacity ?? null,
+        imageUrl: favorite.doc?.imageUrl || '',
+        clubName: favorite.doc?.mainClub?.name || '',
+        clubLogoUrl: favorite.doc?.mainClub?.logoUrl || '',
+      } : null,
       topMonth: topMonth ? { month: topMonth[0], visits: topMonth[1] } : null,
     });
   } catch (error) {
