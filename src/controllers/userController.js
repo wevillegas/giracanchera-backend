@@ -16,20 +16,44 @@ async function getVisitStats(userId) {
   return { visitedStadiums, visitedCount: visitedStadiums.length };
 }
 
+// Escudo del club de hincha que se muestra junto a la foto en listas de usuarios
+const CLUB_BADGE = { path: 'clubHincha', select: 'name logoUrl' };
+
+// Marca en cada usuario de una lista si ya sigue al que mira (followsViewer)
+const withFollowsViewer = async (users, viewerId) => {
+  const plain = users.filter(Boolean).map((u) => (u.toObject ? u.toObject() : u));
+  const followingViewer = new Set(
+    viewerId ? (await User.find({ _id: { $in: plain.map((u) => u._id) }, following: viewerId }).distinct('_id')).map(String) : []
+  );
+  return plain.map((u) => ({ ...u, followsViewer: followingViewer.has(String(u._id)) }));
+};
+
 export const getProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id)
       .select('-password')
       .populate('clubHincha', 'name logoUrl')
       .populate('wantToVisit', 'name imageUrl location capacity mainClub')
-      .populate('following', 'username avatarUrl');
+      .populate({ path: 'following', select: 'username avatarUrl bio clubHincha', populate: CLUB_BADGE });
 
     const [followers, visitStats] = await Promise.all([
-      User.find({ following: req.user._id }).select('username avatarUrl'),
+      User.find({ following: req.user._id }).select('username avatarUrl bio clubHincha').populate(CLUB_BADGE),
       getVisitStats(req.user._id),
     ]);
 
-    res.json({ ...user.toJSON(), followers, followersCount: followers.length, ...visitStats });
+    const viewerId = req.user._id;
+    const [followersWithFlag, followingWithFlag] = await Promise.all([
+      withFollowsViewer(followers, viewerId),
+      withFollowsViewer(user.following, viewerId),
+    ]);
+
+    res.json({
+      ...user.toJSON(),
+      following: followingWithFlag,
+      followers: followersWithFlag,
+      followersCount: followers.length,
+      ...visitStats,
+    });
   } catch (error) {
     next(error);
   }
@@ -108,7 +132,7 @@ export const getPublicProfile = async (req, res, next) => {
     const user = await User.findById(req.params.id)
       .select('-email')
       .populate('clubHincha', 'name shortName logoUrl')
-      .populate('following', 'username avatarUrl')
+      .populate({ path: 'following', select: 'username avatarUrl bio clubHincha', populate: CLUB_BADGE })
       .populate('wantToVisit', 'name location imageUrl');
 
     if (!user) {
@@ -116,11 +140,23 @@ export const getPublicProfile = async (req, res, next) => {
     }
 
     const [followers, visitStats] = await Promise.all([
-      User.find({ following: req.params.id }).select('username avatarUrl'),
+      User.find({ following: req.params.id }).select('username avatarUrl bio clubHincha').populate(CLUB_BADGE),
       getVisitStats(req.params.id),
     ]);
 
-    res.json({ ...user.toJSON(), followers, followersCount: followers.length, ...visitStats });
+    const viewerId = req.user?._id;
+    const [followersWithFlag, followingWithFlag] = await Promise.all([
+      withFollowsViewer(followers, viewerId),
+      withFollowsViewer(user.following, viewerId),
+    ]);
+
+    res.json({
+      ...user.toJSON(),
+      following: followingWithFlag,
+      followers: followersWithFlag,
+      followersCount: followers.length,
+      ...visitStats,
+    });
   } catch (error) {
     next(error);
   }
@@ -274,35 +310,6 @@ export const deleteMe = async (req, res, next) => {
   }
 };
 
-// Reemplaza la lista de visitas anteriores del usuario (cada estadio aparece una vez)
-export const setPreviousVisits = async (req, res, next) => {
-  try {
-    const { items } = req.body;
-    if (!Array.isArray(items) || items.length > 200) {
-      return res.status(400).json({ message: 'Formato de visitas anteriores inválido' });
-    }
-
-    const seen = new Set();
-    const clean = [];
-    for (const item of items) {
-      const count = Number(item?.count);
-      if (!isText(item?.stadium) || !Number.isInteger(count) || count < 1 || count > 999) {
-        return res.status(400).json({ message: 'Cada estadio necesita una cantidad de visitas entre 1 y 999' });
-      }
-      if (seen.has(item.stadium)) {
-        return res.status(400).json({ message: 'Un estadio aparece repetido en las visitas anteriores' });
-      }
-      seen.add(item.stadium);
-      clean.push({ stadium: item.stadium, count });
-    }
-
-    const user = await User.findByIdAndUpdate(req.user._id, { previousVisits: clean }, { new: true, runValidators: true });
-    res.json({ previousVisits: user.previousVisits });
-  } catch (error) {
-    next(error);
-  }
-};
-
 const EXPENSE_FIELDS = ['ticket', 'food', 'parking', 'transport'];
 const monthKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 
@@ -349,31 +356,16 @@ export const getMyStats = async (req, res, next) => {
     const favorite = favoriteCount ? { ...favoriteCount, doc: stadiumData.get(favoriteId) } : null;
 
     // Partidos de su club de hincha (según el partido cargado en cada visita)
-    const me = await User.findById(req.user._id).select('previousVisits clubHincha').populate('clubHincha', 'name');
+    const me = await User.findById(req.user._id).select('clubHincha').populate('clubHincha', 'name');
     const clubName = me?.clubHincha?.name || '';
     const clubMatches = clubName
       ? { clubName, count: visits.filter((v) => v.matchDetails?.homeTeam === clubName || v.matchDetails?.awayTeam === clubName).length }
       : null;
 
-    // Visitas anteriores a la app: cargadas por el usuario, separadas de las reseñas
-    const previousStadiums = await Stadium.find({ _id: { $in: (me?.previousVisits || []).map((p) => p.stadium) } })
-      .select('name location');
-    const previousNames = new Map(previousStadiums.map((s) => [String(s._id), s]));
-    const previousItems = (me?.previousVisits || []).map((p) => {
-      const s = previousNames.get(String(p.stadium));
-      return {
-        stadiumId: String(p.stadium),
-        name: s?.name || 'Estadio',
-        province: s?.location?.province || s?.location?.city || '',
-        count: p.count,
-      };
-    });
-    const previous = { total: previousItems.reduce((sum, p) => sum + p.count, 0), items: previousItems };
     const topMonth = [...monthCounts.entries()].sort((a, b) => b[1] - a[1])[0];
 
     res.json({
       clubMatches,
-      previous,
       visits: visits.length,
       stadiums: stadiumCounts.size,
       avgRating: visits.length ? Math.round((ratingSum / visits.length) * 10) / 10 : 0,

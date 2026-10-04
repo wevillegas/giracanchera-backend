@@ -27,12 +27,6 @@ const userSchema = new mongoose.Schema(
     following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     wantToVisit: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Stadium' }],
     savedVisits: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Visit' }],
-    // Visitas anteriores a registrarse en la app (no son reseñas): cantidad aproximada por estadio
-    previousVisits: [{
-      stadium: { type: mongoose.Schema.Types.ObjectId, ref: 'Stadium', required: true },
-      count: { type: Number, min: 1, max: 999, required: true },
-      _id: false,
-    }],
     // Se incrementa al cerrar sesión: los tokens emitidos antes dejan de valer
     tokenVersion: { type: Number, default: 0 },
   },
