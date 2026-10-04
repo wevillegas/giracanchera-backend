@@ -162,6 +162,11 @@ export const adminUpdateUser = async (req, res, next) => {
     const { nombre, username, email, rol, bio, clubHincha } = req.body;
     const updates = {};
 
+    // Un admin no puede quitarse a sí mismo el rol (evita dejar la app sin administradores desde la propia cuenta)
+    if (rol !== undefined && rol !== 'admin' && req.params.id === req.user._id.toString()) {
+      return res.status(400).json({ message: 'No podés quitarte tu propio rol de administrador' });
+    }
+
     if (nombre !== undefined) updates.nombre = nombre.trim();
     if (username !== undefined) updates.username = username.trim();
     if (email !== undefined) updates.email = email.trim();

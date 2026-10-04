@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 
 import authRoutes from './routes/authRoutes.js';
@@ -18,6 +19,9 @@ const allowedOrigins = [
   'http://localhost:5175',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
+
+// Encabezados de seguridad. Las imágenes vienen de Cloudinary, por eso el recurso se permite cross-origin
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
 // Detrás de un proxy (Render, Railway, etc.) el IP real llega en X-Forwarded-For
 if (process.env.TRUST_PROXY) app.set('trust proxy', 1);

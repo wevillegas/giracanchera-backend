@@ -2,8 +2,8 @@ import { isText } from '../utils/validation.js';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+const generateToken = (user) => {
+  return jwt.sign({ id: user._id, v: user.tokenVersion ?? 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
 };
 
 export const register = async (req, res, next) => {
@@ -36,7 +36,7 @@ export const register = async (req, res, next) => {
 
     res.status(201).json({
       user,
-      token: generateToken(user._id),
+      token: generateToken(user),
     });
   } catch (error) {
     next(error);
@@ -62,7 +62,7 @@ export const login = async (req, res, next) => {
 
     res.json({
       user,
-      token: generateToken(user._id),
+      token: generateToken(user),
     });
   } catch (error) {
     next(error);
@@ -77,6 +77,15 @@ export const getMe = async (req, res, next) => {
       .populate('wantToVisit', 'name location');
 
     res.json(user);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const logout = async (req, res, next) => {
+  try {
+    await User.updateOne({ _id: req.user._id }, { $inc: { tokenVersion: 1 } });
+    res.json({ message: 'Sesión cerrada' });
   } catch (error) {
     next(error);
   }

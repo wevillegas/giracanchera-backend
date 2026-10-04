@@ -27,6 +27,8 @@ const userSchema = new mongoose.Schema(
     following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     wantToVisit: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Stadium' }],
     savedVisits: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Visit' }],
+    // Se incrementa al cerrar sesión: los tokens emitidos antes dejan de valer
+    tokenVersion: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

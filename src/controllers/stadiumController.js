@@ -26,6 +26,12 @@ function checkStadiumInput(body) {
   return null;
 }
 
+// Solo se guardan los campos que el admin puede modificar (evita mass assignment)
+const STADIUM_FIELDS = ['name', 'capacity', 'location', 'ownerType', 'mainClub', 'imageUrl'];
+function pickStadiumFields(body) {
+  return Object.fromEntries(STADIUM_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
+}
+
 // Un estadio de la provincia no tiene club dueño; el resto puede tener mainClub o quedar sin dueño
 function ownershipFields(body) {
   if (body.ownerType === 'province') return { ...body, ownerType: 'province', mainClub: null };
@@ -46,7 +52,7 @@ export const createStadium = async (req, res, next) => {
     const inputError = checkStadiumInput(req.body);
     if (inputError) return res.status(400).json({ message: inputError });
 
-    const stadium = await Stadium.create(ownershipFields(req.body));
+    const stadium = await Stadium.create(ownershipFields(pickStadiumFields(req.body)));
     res.status(201).json(stadium);
   } catch (error) {
     next(error);
@@ -58,7 +64,7 @@ export const updateStadium = async (req, res, next) => {
     const inputError = checkStadiumInput(req.body);
     if (inputError) return res.status(400).json({ message: inputError });
 
-    const stadium = await Stadium.findByIdAndUpdate(req.params.id, ownershipFields(req.body), {
+    const stadium = await Stadium.findByIdAndUpdate(req.params.id, ownershipFields(pickStadiumFields(req.body)), {
       new: true,
       runValidators: true,
     }).populate('mainClub', 'name shortName logoUrl location');
