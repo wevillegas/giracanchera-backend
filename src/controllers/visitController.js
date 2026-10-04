@@ -143,6 +143,7 @@ export const deleteVisit = async (req, res, next) => {
     }
 
     await visit.deleteOne();
+    await User.updateMany({ savedVisits: visit._id }, { $pull: { savedVisits: visit._id } });
     res.json({ message: 'Visita eliminada' });
   } catch (error) {
     next(error);
@@ -158,7 +159,7 @@ export const getVisitsByUser = async (req, res, next) => {
         populate: { path: 'mainClub', select: 'name logoUrl location' },
       })
       .populate('user', 'username avatarUrl')
-      .sort({ visitDate: -1 });
+      .sort({ createdAt: -1 });
 
     res.json(visits);
   } catch (error) {
@@ -172,6 +173,97 @@ export const getVisitsByStadium = async (req, res, next) => {
       .populate('user', 'username avatarUrl')
       .sort({ visitDate: -1 });
 
+    res.json(visits);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Me gusta: se puede dar a reseñas de otros usuarios; el dueño no puede darse like a sí mismo
+export const toggleLike = async (req, res, next) => {
+  try {
+    const visit = await Visit.findById(req.params.id);
+    if (!visit) {
+      return res.status(404).json({ message: 'Visita no encontrada' });
+    }
+    if (visit.user.toString() === req.user.id) {
+      return res.status(400).json({ message: 'No podés darle me gusta a tu propia reseña' });
+    }
+
+    const index = visit.likes.findIndex((id) => id.toString() === req.user.id);
+    if (index === -1) {
+      visit.likes.push(req.user._id);
+    } else {
+      visit.likes.splice(index, 1);
+    }
+    await visit.save();
+
+    res.json({ liked: index === -1, likesCount: visit.likes.length });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Guardar: lista privada del usuario con las reseñas que quiere volver a ver
+export const toggleSave = async (req, res, next) => {
+  try {
+    const visit = await Visit.findById(req.params.id);
+    if (!visit) {
+      return res.status(404).json({ message: 'Visita no encontrada' });
+    }
+    if (visit.user.toString() === req.user.id) {
+      return res.status(400).json({ message: 'No podés guardar tu propia reseña' });
+    }
+
+    const user = await User.findById(req.user._id);
+    const isSaved = user.savedVisits.some((id) => id.toString() === visit._id.toString());
+    if (isSaved) {
+      user.savedVisits.pull(visit._id);
+    } else {
+      user.savedVisits.push(visit._id);
+    }
+    await user.save();
+
+    res.json({ saved: !isSaved });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Datos que necesitan las cards de reseñas guardadas o con me gusta
+const populateVisitCard = (query) => query
+  .populate({
+    path: 'stadium',
+    select: 'name imageUrl location mainClub',
+    populate: { path: 'mainClub', select: 'name logoUrl location' },
+  })
+  .populate('user', 'username avatarUrl');
+
+// Privadas: solo el usuario logueado ve sus guardadas
+export const getSavedVisits = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id).populate({
+      path: 'savedVisits',
+      populate: [
+        {
+          path: 'stadium',
+          select: 'name imageUrl location mainClub',
+          populate: { path: 'mainClub', select: 'name logoUrl location' },
+        },
+        { path: 'user', select: 'username avatarUrl' },
+      ],
+    });
+
+    res.json(user.savedVisits.filter(Boolean));
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Privadas: reseñas de otros a las que el usuario logueado les dio me gusta
+export const getLikedVisits = async (req, res, next) => {
+  try {
+    const visits = await populateVisitCard(Visit.find({ likes: req.user._id }).sort({ visitDate: -1 }));
     res.json(visits);
   } catch (error) {
     next(error);

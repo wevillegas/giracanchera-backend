@@ -26,6 +26,7 @@ const userSchema = new mongoose.Schema(
     bio: { type: String, default: '' },
     following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     wantToVisit: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Stadium' }],
+    savedVisits: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Visit' }],
   },
   { timestamps: true }
 );

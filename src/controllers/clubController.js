@@ -13,7 +13,7 @@ export const getClubs = async (req, res, next) => {
 
 export const listClubs = async (req, res, next) => {
   try {
-    const clubs = await Club.find().select('name').sort({ name: 1 });
+    const clubs = await Club.find().select('name logoUrl').sort({ name: 1 });
     res.json(clubs);
   } catch (error) {
     next(error);

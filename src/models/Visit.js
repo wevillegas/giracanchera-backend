@@ -16,6 +16,7 @@ const visitSchema = new mongoose.Schema(
     rating: { type: Number, min: 1, max: 10, required: true },
     reviewText: { type: String, default: '' },
     images: [{ type: String }],
+    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     matchDetails: {
       homeTeam: { type: String, default: '' },
       awayTeam: { type: String, default: '' },
