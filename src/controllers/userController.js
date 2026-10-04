@@ -273,3 +273,58 @@ export const deleteMe = async (req, res, next) => {
     next(error);
   }
 };
+
+const EXPENSE_FIELDS = ['ticket', 'food', 'parking', 'transport'];
+const monthKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+
+// Estadísticas personales: solo el propio usuario las ve (se calculan con sus visitas)
+export const getMyStats = async (req, res, next) => {
+  try {
+    const visits = await Visit.find({ user: req.user._id })
+      .select('stadium rating visitDate expenses matchDetails')
+      .populate('stadium', 'name location');
+
+    const stadiumCounts = new Map();
+    const monthCounts = new Map();
+    const spendByField = Object.fromEntries(EXPENSE_FIELDS.map((f) => [f, 0]));
+    let ratingSum = 0;
+    let matches = 0;
+    let spentVisits = 0;
+    let totalSpent = 0;
+
+    for (const v of visits) {
+      const stadiumId = String(v.stadium?._id || v.stadium);
+      const current = stadiumCounts.get(stadiumId) || { name: v.stadium?.name || 'Estadio', visits: 0 };
+      current.visits += 1;
+      stadiumCounts.set(stadiumId, current);
+
+      const month = monthKey(new Date(v.visitDate));
+      monthCounts.set(month, (monthCounts.get(month) || 0) + 1);
+
+      ratingSum += v.rating;
+      if (v.matchDetails?.homeTeam || v.matchDetails?.awayTeam) matches += 1;
+
+      const visitTotal = EXPENSE_FIELDS.reduce((sum, f) => sum + (v.expenses?.[f] || 0), 0);
+      if (visitTotal > 0) spentVisits += 1;
+      totalSpent += visitTotal;
+      EXPENSE_FIELDS.forEach((f) => { spendByField[f] += v.expenses?.[f] || 0; });
+    }
+
+    const favorite = [...stadiumCounts.values()].sort((a, b) => b.visits - a.visits)[0] || null;
+    const topMonth = [...monthCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+
+    res.json({
+      visits: visits.length,
+      stadiums: stadiumCounts.size,
+      avgRating: visits.length ? Math.round((ratingSum / visits.length) * 10) / 10 : 0,
+      totalSpent,
+      avgSpent: spentVisits ? Math.round(totalSpent / spentVisits) : 0,
+      spendByField,
+      matches,
+      favoriteStadium: favorite ? { name: favorite.name, visits: favorite.visits } : null,
+      topMonth: topMonth ? { month: topMonth[0], visits: topMonth[1] } : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

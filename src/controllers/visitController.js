@@ -47,7 +47,8 @@ export function destroyImages(urls) {
   }));
 }
 
-const MAX_EXPENSE = 10000000;
+// Tope por rubro de gasto (en pesos); el mismo que aplica el formulario
+const MAX_EXPENSE = 2000000;
 const EXPENSE_KEYS = ['ticket', 'food', 'parking', 'transport'];
 const bad = (message) => ({ error: message });
 

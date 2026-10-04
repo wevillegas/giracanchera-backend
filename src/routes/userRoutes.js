@@ -10,6 +10,7 @@ import {
   adminUpdateUser,
   adminDeleteUser,
   deleteMe,
+  getMyStats,
 } from '../controllers/userController.js';
 import { protect, adminOnly } from '../middlewares/authMiddleware.js';
 import { uploadAvatar } from '../middlewares/uploadMiddleware.js';
@@ -20,6 +21,7 @@ router.get('/profile', protect, getProfile);
 router.put('/profile', protect, uploadAvatar.single('avatar'), updateProfile);
 router.get('/search', protect, searchUsers);
 router.delete('/me', protect, deleteMe);
+router.get('/me/stats', protect, getMyStats);
 router.get('/admin/all', protect, adminOnly, getAllUsers);
 router.put('/admin/:id', protect, adminOnly, adminUpdateUser);
 router.delete('/admin/:id', protect, adminOnly, adminDeleteUser);
