@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import { rateLimit } from 'express-rate-limit';
 
 import authRoutes from './routes/authRoutes.js';
 import stadiumRoutes from './routes/stadiumRoutes.js';
@@ -18,29 +19,45 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
+// Detrás de un proxy (Render, Railway, etc.) el IP real llega en X-Forwarded-For
+if (process.env.TRUST_PROXY) app.set('trust proxy', 1);
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Permite peticiones sin origin (Postman/móvil) o si el origen está en la lista blanca
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        // En desarrollo también refleja el origen para evitar bloqueos por cambio de puerto
-        callback(null, true);
-      }
+      // Sin origin (Postman, curl) o en la lista blanca; el resto no recibe encabezados CORS
+      callback(null, !origin || allowedOrigins.includes(origin));
     },
     credentials: true,
   })
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+
+// Límites por IP: login y registro son los más sensibles a fuerza bruta y spam
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Demasiados intentos. Probá de nuevo en unos minutos.' },
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Demasiadas solicitudes. Probá de nuevo en unos minutos.' },
+});
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.use('/api/auth', authRoutes);
+app.use('/api', apiLimiter);
+app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/stadiums', stadiumRoutes);
 app.use('/api/visits', visitRoutes);
 app.use('/api/clubs', clubRoutes);

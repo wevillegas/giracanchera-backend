@@ -1,3 +1,4 @@
+import { isText } from '../utils/validation.js';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
@@ -11,6 +12,11 @@ export const register = async (req, res, next) => {
 
     if (!username || !email || !password) {
       return res.status(400).json({ message: 'Faltan campos obligatorios' });
+    }
+    // Solo texto: un objeto en email o username permitiría inyectar operadores de Mongo
+    const textFields = [username, email, password, nombre, clubHincha].filter((v) => v !== undefined);
+    if (!textFields.every(isText)) {
+      return res.status(400).json({ message: 'Datos inválidos' });
     }
 
     const existingUser = await User.findOne({ $or: [{ email }, { username }] });
@@ -43,6 +49,9 @@ export const login = async (req, res, next) => {
 
     if ((!email && !username) || !password) {
       return res.status(400).json({ message: 'Email/usuario y contraseña son obligatorios' });
+    }
+    if (![email, username, password].filter((v) => v !== undefined).every(isText)) {
+      return res.status(400).json({ message: 'Datos inválidos' });
     }
 
     const user = await User.findOne(email ? { email } : { username });

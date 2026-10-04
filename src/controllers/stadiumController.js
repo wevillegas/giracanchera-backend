@@ -1,6 +1,30 @@
+import { isText, isNumberInRange } from '../utils/validation.js';
 import Stadium from '../models/Stadium.js';
 import Visit from '../models/Visit.js';
 import User from '../models/User.js';
+
+// Valida solo los campos que llegan; devuelve un mensaje de error o null
+function checkStadiumInput(body) {
+  const { name, capacity, location } = body;
+  if (name !== undefined && (!isText(name) || name.trim().length === 0 || name.length > 120)) {
+    return 'El nombre del estadio no es válido';
+  }
+  if (capacity !== undefined && !(Number.isInteger(Number(capacity)) && isNumberInRange(Number(capacity), 0, 200000))) {
+    return 'La capacidad debe ser un número entero entre 0 y 200.000';
+  }
+  if (location !== undefined) {
+    if (!location || typeof location !== 'object' || Array.isArray(location)) return 'La ubicación no es válida';
+    for (const key of ['city', 'province', 'country']) {
+      if (location[key] !== undefined && (!isText(location[key]) || location[key].length > 100)) {
+        return 'La ubicación debe ser texto';
+      }
+    }
+    const { lat, lng } = location.coordinates || {};
+    if (lat !== undefined && !isNumberInRange(Number(lat), -90, 90)) return 'La latitud debe estar entre -90 y 90';
+    if (lng !== undefined && !isNumberInRange(Number(lng), -180, 180)) return 'La longitud debe estar entre -180 y 180';
+  }
+  return null;
+}
 
 // Un estadio de la provincia no tiene club dueño; el resto puede tener mainClub o quedar sin dueño
 function ownershipFields(body) {
@@ -19,6 +43,9 @@ export const getStadiums = async (req, res, next) => {
 
 export const createStadium = async (req, res, next) => {
   try {
+    const inputError = checkStadiumInput(req.body);
+    if (inputError) return res.status(400).json({ message: inputError });
+
     const stadium = await Stadium.create(ownershipFields(req.body));
     res.status(201).json(stadium);
   } catch (error) {
@@ -28,6 +55,9 @@ export const createStadium = async (req, res, next) => {
 
 export const updateStadium = async (req, res, next) => {
   try {
+    const inputError = checkStadiumInput(req.body);
+    if (inputError) return res.status(400).json({ message: inputError });
+
     const stadium = await Stadium.findByIdAndUpdate(req.params.id, ownershipFields(req.body), {
       new: true,
       runValidators: true,

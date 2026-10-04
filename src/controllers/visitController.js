@@ -1,6 +1,7 @@
 import Visit from '../models/Visit.js';
 import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
+import { isText, isNumberInRange, safeParse } from '../utils/validation.js';
 
 const MAX_VISIT_PHOTOS = 4;
 const MAX_REVIEW_CHARS = 300;
@@ -36,28 +37,74 @@ function destroyImages(urls) {
   }));
 }
 
+const MAX_EXPENSE = 10000000;
+const EXPENSE_KEYS = ['ticket', 'food', 'parking', 'transport'];
+const bad = (message) => ({ error: message });
+
+// Valida los datos de una visita (crear o editar). Solo mira los campos que llegan.
+// Devuelve { error } o los valores ya parseados.
+function checkVisitInput({ visitDate, rating, reviewText, matchDetails, expenses, removeImages }) {
+  if (visitDate !== undefined) {
+    if (Number.isNaN(new Date(visitDate).getTime())) return bad('La fecha de la visita no es válida');
+    if (isFutureDate(visitDate)) return bad('La fecha de la visita no puede ser posterior a hoy');
+  }
+  if (rating !== undefined && !isNumberInRange(Number(rating), 1, 10)) {
+    return bad('La puntuación debe estar entre 1 y 10');
+  }
+  if (reviewText !== undefined) {
+    if (!isText(reviewText)) return bad('La reseña debe ser texto');
+    if (reviewText.length > MAX_REVIEW_CHARS) return bad(REVIEW_TOO_LONG);
+  }
+
+  const parsedMatch = safeParse(matchDetails);
+  if (!parsedMatch.ok) return bad('Los datos del partido no son válidos');
+  if (parsedMatch.value !== undefined) {
+    const m = parsedMatch.value;
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return bad('Los datos del partido no son válidos');
+    const { homeTeam = '', awayTeam = '', score = '' } = m;
+    const textOk = [homeTeam, awayTeam, score].every(isText)
+      && homeTeam.length <= 100 && awayTeam.length <= 100 && score.length <= 20;
+    if (!textOk) return bad('Los datos del partido no son válidos');
+    if (sameTeamError(m)) return bad(MATCH_SAME_TEAM);
+  }
+
+  const parsedExpenses = safeParse(expenses);
+  if (!parsedExpenses.ok) return bad('Los gastos no son válidos');
+  if (parsedExpenses.value !== undefined) {
+    const e = parsedExpenses.value;
+    const amountsOk = e && typeof e === 'object' && !Array.isArray(e)
+      && EXPENSE_KEYS.every((key) => isNumberInRange(Number(e[key] ?? 0), 0, MAX_EXPENSE));
+    if (!amountsOk) return bad('Los gastos deben ser montos positivos');
+  }
+
+  const parsedRemove = safeParse(removeImages);
+  const removeOk = parsedRemove.ok
+    && (parsedRemove.value === undefined || (Array.isArray(parsedRemove.value) && parsedRemove.value.every(isText)));
+  if (!removeOk) return bad('Las fotos a quitar no son válidas');
+
+  return {
+    match: parsedMatch.value,
+    expenses: parsedExpenses.value,
+    removeImages: parsedRemove.value || [],
+  };
+}
+
 export const createVisit = async (req, res, next) => {
   try {
-    const { stadium, visitDate, rating, reviewText, matchDetails, expenses } = req.body;
+    const { stadium, visitDate, rating, reviewText } = req.body;
+    const files = req.files || [];
+
+    // Si la validación falla, las fotos ya subidas a Cloudinary no quedan huérfanas
+    const fail = async (message) => {
+      await destroyImages(files.map((f) => f.path));
+      return res.status(400).json({ message });
+    };
 
     if (!stadium || !visitDate || !rating) {
-      return res.status(400).json({ message: 'Faltan campos obligatorios' });
+      return fail('Faltan campos obligatorios');
     }
-    if (isFutureDate(visitDate)) {
-      await destroyImages((req.files || []).map((f) => f.path));
-      return res.status(400).json({ message: 'La fecha de la visita no puede ser posterior a hoy' });
-    }
-    if (reviewText && reviewText.length > MAX_REVIEW_CHARS) {
-      await destroyImages((req.files || []).map((f) => f.path));
-      return res.status(400).json({ message: REVIEW_TOO_LONG });
-    }
-    const parsedMatch = matchDetails ? JSON.parse(matchDetails) : undefined;
-    if (sameTeamError(parsedMatch)) {
-      await destroyImages((req.files || []).map((f) => f.path));
-      return res.status(400).json({ message: MATCH_SAME_TEAM });
-    }
-
-    const images = (req.files || []).map((file) => file.path);
+    const check = checkVisitInput(req.body);
+    if (check.error) return fail(check.error);
 
     const visit = await Visit.create({
       user: req.user._id,
@@ -65,9 +112,9 @@ export const createVisit = async (req, res, next) => {
       visitDate,
       rating,
       reviewText,
-      images,
-      matchDetails: parsedMatch,
-      expenses: expenses ? JSON.parse(expenses) : undefined,
+      images: files.map((file) => file.path),
+      matchDetails: check.match,
+      expenses: check.expenses,
     });
 
     await User.findByIdAndUpdate(req.user._id, { $pull: { wantToVisit: stadium } });
@@ -88,40 +135,31 @@ export const updateVisit = async (req, res, next) => {
       return res.status(403).json({ message: 'No podés editar esta visita' });
     }
 
-    const { rating, reviewText, visitDate, matchDetails, expenses, removeImages } = req.body;
-    if (visitDate !== undefined && isFutureDate(visitDate)) {
-      await destroyImages((req.files || []).map((f) => f.path));
-      return res.status(400).json({ message: 'La fecha de la visita no puede ser posterior a hoy' });
-    }
-    if (reviewText !== undefined && reviewText.length > MAX_REVIEW_CHARS) {
-      await destroyImages((req.files || []).map((f) => f.path));
-      return res.status(400).json({ message: REVIEW_TOO_LONG });
-    }
+    const { rating, reviewText, visitDate } = req.body;
+    const newFiles = req.files || [];
+    const fail = async (message) => {
+      await destroyImages(newFiles.map((f) => f.path));
+      return res.status(400).json({ message });
+    };
+
+    const check = checkVisitInput(req.body);
+    if (check.error) return fail(check.error);
 
     // Fotos que el usuario quitó en el modal de edición (solo las que realmente son de esta visita)
-    const toRemove = removeImages ? JSON.parse(removeImages) : [];
+    const toRemove = check.removeImages;
     const removed = visit.images.filter((url) => toRemove.includes(url));
     const kept = visit.images.filter((url) => !toRemove.includes(url));
-    const newFiles = req.files || [];
 
     // Las fotos nuevas se suman a las que quedan; el tope es 4 en total
     if (kept.length + newFiles.length > MAX_VISIT_PHOTOS) {
-      await destroyImages(newFiles.map((f) => f.path));
-      return res.status(400).json({ message: `Una visita puede tener hasta ${MAX_VISIT_PHOTOS} fotos` });
+      return fail(`Una visita puede tener hasta ${MAX_VISIT_PHOTOS} fotos`);
     }
 
     if (rating !== undefined) visit.rating = rating;
     if (reviewText !== undefined) visit.reviewText = reviewText;
     if (visitDate !== undefined) visit.visitDate = visitDate;
-    if (matchDetails) {
-      const parsedMatch = JSON.parse(matchDetails);
-      if (sameTeamError(parsedMatch)) {
-        await destroyImages(newFiles.map((f) => f.path));
-        return res.status(400).json({ message: MATCH_SAME_TEAM });
-      }
-      visit.matchDetails = parsedMatch;
-    }
-    if (expenses) visit.expenses = JSON.parse(expenses);
+    if (check.match !== undefined) visit.matchDetails = check.match;
+    if (check.expenses !== undefined) visit.expenses = check.expenses;
     visit.images = [...kept, ...newFiles.map((f) => f.path)];
 
     await visit.save();

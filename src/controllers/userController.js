@@ -1,3 +1,4 @@
+import { isText, escapeRegex } from '../utils/validation.js';
 import User from '../models/User.js';
 import Visit from '../models/Visit.js';
 import Stadium from '../models/Stadium.js';
@@ -81,11 +82,14 @@ export const updateProfile = async (req, res, next) => {
 
 export const searchUsers = async (req, res, next) => {
   try {
-    const q = (req.query.username || '').trim();
+    const raw = req.query.username;
+    if (!isText(raw)) return res.json([]);
+    // Texto literal, acotado: sin regex del usuario
+    const q = raw.trim().slice(0, 50);
     if (!q) return res.json([]);
 
     const users = await User.find({
-      username: { $regex: q, $options: 'i' },
+      username: { $regex: escapeRegex(q), $options: 'i' },
       _id: { $ne: req.user._id },
     })
       .select('username avatarUrl nombre')
