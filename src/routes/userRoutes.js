@@ -9,6 +9,7 @@ import {
   getAllUsers,
   adminUpdateUser,
   adminDeleteUser,
+  deleteMe,
 } from '../controllers/userController.js';
 import { protect, adminOnly } from '../middlewares/authMiddleware.js';
 import { uploadAvatar } from '../middlewares/uploadMiddleware.js';
@@ -18,6 +19,7 @@ const router = Router();
 router.get('/profile', protect, getProfile);
 router.put('/profile', protect, uploadAvatar.single('avatar'), updateProfile);
 router.get('/search', protect, searchUsers);
+router.delete('/me', protect, deleteMe);
 router.get('/admin/all', protect, adminOnly, getAllUsers);
 router.put('/admin/:id', protect, adminOnly, adminUpdateUser);
 router.delete('/admin/:id', protect, adminOnly, adminDeleteUser);

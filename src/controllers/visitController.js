@@ -1,11 +1,21 @@
 import Visit from '../models/Visit.js';
 import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
-import { isText, isNumberInRange, safeParse } from '../utils/validation.js';
+import { isText, isNumberInRange, safeParse, textWithin } from '../utils/validation.js';
+import Report from '../models/Report.js';
 
 const MAX_VISIT_PHOTOS = 4;
 const MAX_REVIEW_CHARS = 300;
 const REVIEW_TOO_LONG = `La reseña no puede tener más de ${MAX_REVIEW_CHARS} caracteres`;
+// Paginación opcional: ?page=N&limit=M (máximo 100). Sin parámetros se devuelve todo.
+function paginationFrom(req) {
+  const limit = Math.min(Number.parseInt(req.query.limit, 10) || 0, 100);
+  const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+  return {
+    query: (q) => (limit > 0 ? q.skip((page - 1) * limit).limit(limit) : q),
+  };
+}
+
 const MATCH_SAME_TEAM = 'El local y el visitante no pueden ser el mismo club';
 
 // El partido es opcional; si se carga, local y visitante tienen que ser distintos
@@ -30,7 +40,7 @@ function publicIdFromUrl(url) {
 }
 
 // Borra fotos de Cloudinary; si falla una, no frena la respuesta
-function destroyImages(urls) {
+export function destroyImages(urls) {
   return Promise.all(urls.map((url) => {
     const publicId = publicIdFromUrl(url);
     return publicId ? cloudinary.uploader.destroy(publicId).catch(() => {}) : null;
@@ -190,7 +200,8 @@ export const deleteVisit = async (req, res, next) => {
 
 export const getVisitsByUser = async (req, res, next) => {
   try {
-    const visits = await Visit.find({ user: req.params.userId })
+    const { query: pageQuery } = paginationFrom(req);
+    const visits = await pageQuery(Visit.find({ user: req.params.userId }))
       .populate({
         path: 'stadium',
         select: 'name imageUrl location mainClub',
@@ -207,7 +218,8 @@ export const getVisitsByUser = async (req, res, next) => {
 
 export const getVisitsByStadium = async (req, res, next) => {
   try {
-    const visits = await Visit.find({ stadium: req.params.stadiumId })
+    const { query: pageQuery } = paginationFrom(req);
+    const visits = await pageQuery(Visit.find({ stadium: req.params.stadiumId }))
       .populate('user', 'username avatarUrl')
       .sort({ visitDate: -1 });
 
@@ -303,6 +315,85 @@ export const getLikedVisits = async (req, res, next) => {
   try {
     const visits = await populateVisitCard(Visit.find({ likes: req.user._id }).sort({ visitDate: -1 }));
     res.json(visits);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Denuncia: solo reseñas de otros, una vez por usuario
+export const reportVisit = async (req, res, next) => {
+  try {
+    const { reason } = req.body;
+    if (!isText(reason) || !reason.trim() || reason.length > 300) {
+      return res.status(400).json({ message: 'Contá el motivo en hasta 300 caracteres' });
+    }
+    const visit = await Visit.findById(req.params.id);
+    if (!visit) {
+      return res.status(404).json({ message: 'Visita no encontrada' });
+    }
+    if (visit.user.toString() === req.user.id) {
+      return res.status(400).json({ message: 'No podés denunciar tu propia reseña' });
+    }
+
+    try {
+      await Report.create({ visit: visit._id, reporter: req.user._id, reason });
+    } catch (error) {
+      if (error.code === 11000) {
+        return res.status(400).json({ message: 'Ya denunciaste esta reseña' });
+      }
+      throw error;
+    }
+    res.status(201).json({ message: 'Gracias, revisaremos la reseña' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Admin: denuncias abiertas con la reseña y los usuarios involucrados
+export const getReports = async (req, res, next) => {
+  try {
+    const reports = await Report.find({ status: 'open' })
+      .sort({ createdAt: -1 })
+      .populate('reporter', 'username')
+      .populate({
+        path: 'visit',
+        select: 'reviewText rating visitDate user stadium',
+        populate: [
+          { path: 'user', select: 'username' },
+          { path: 'stadium', select: 'name' },
+        ],
+      });
+    res.json(reports);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Admin: descartar la denuncia o quitar la reseña (y con ella sus denuncias)
+export const resolveReport = async (req, res, next) => {
+  try {
+    const { action } = req.body;
+    const report = await Report.findById(req.params.id);
+    if (!report) {
+      return res.status(404).json({ message: 'Denuncia no encontrada' });
+    }
+
+    if (action === 'remove_review') {
+      const visit = await Visit.findById(report.visit);
+      if (visit) {
+        await destroyImages(visit.images);
+        await User.updateMany({ savedVisits: visit._id }, { $pull: { savedVisits: visit._id } });
+        await visit.deleteOne();
+      }
+      await Report.deleteMany({ visit: report.visit });
+      return res.json({ message: 'Reseña eliminada' });
+    }
+    if (action === 'dismiss') {
+      report.status = 'resolved';
+      await report.save();
+      return res.json({ message: 'Denuncia descartada' });
+    }
+    return res.status(400).json({ message: 'Acción inválida' });
   } catch (error) {
     next(error);
   }

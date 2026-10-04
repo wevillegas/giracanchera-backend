@@ -1,4 +1,6 @@
-import { isText } from '../utils/validation.js';
+import {
+  isText, textWithin, isEmailFormat, isUsernameFormat, isDateValue,
+} from '../utils/validation.js';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
@@ -17,6 +19,21 @@ export const register = async (req, res, next) => {
     const textFields = [username, email, password, nombre, clubHincha].filter((v) => v !== undefined);
     if (!textFields.every(isText)) {
       return res.status(400).json({ message: 'Datos inválidos' });
+    }
+    if (!isUsernameFormat(username)) {
+      return res.status(400).json({ message: 'El usuario debe tener entre 3 y 30 caracteres: letras, números, punto, guion o guion bajo' });
+    }
+    if (!isEmailFormat(email)) {
+      return res.status(400).json({ message: 'El email no es válido' });
+    }
+    if (password.length < 8 || password.length > 128) {
+      return res.status(400).json({ message: 'La contraseña debe tener entre 8 y 128 caracteres' });
+    }
+    if (nombre !== undefined && !textWithin(nombre, 80)) {
+      return res.status(400).json({ message: 'El nombre no puede tener más de 80 caracteres' });
+    }
+    if (fechaNacimiento !== undefined && !isDateValue(fechaNacimiento)) {
+      return res.status(400).json({ message: 'La fecha de nacimiento no es válida' });
     }
 
     const existingUser = await User.findOne({ $or: [{ email }, { username }] });

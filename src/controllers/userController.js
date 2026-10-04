@@ -1,7 +1,9 @@
-import { isText, escapeRegex } from '../utils/validation.js';
+import { isText, escapeRegex, textWithin } from '../utils/validation.js';
 import User from '../models/User.js';
 import Visit from '../models/Visit.js';
 import Stadium from '../models/Stadium.js';
+import Report from '../models/Report.js';
+import { destroyImages } from './visitController.js';
 
 // Estadios distintos que el usuario ya visitó (según sus reseñas reales en la BD)
 async function getVisitStats(userId) {
@@ -39,21 +41,21 @@ export const updateProfile = async (req, res, next) => {
     const updates = {};
 
     if (nombre !== undefined) {
-      if (typeof nombre !== 'string') {
-        return res.status(400).json({ message: 'nombre debe ser texto' });
+      if (!textWithin(nombre, 80)) {
+        return res.status(400).json({ message: 'El nombre debe ser texto de hasta 80 caracteres' });
       }
       updates.nombre = nombre.trim();
     }
 
     if (bio !== undefined) {
-      if (typeof bio !== 'string') {
-        return res.status(400).json({ message: 'bio debe ser texto' });
+      if (!textWithin(bio, 300)) {
+        return res.status(400).json({ message: 'La bio debe ser texto de hasta 300 caracteres' });
       }
       updates.bio = bio.trim();
     }
 
     if (avatarUrl !== undefined) {
-      if (typeof avatarUrl !== 'string') {
+      if (!textWithin(avatarUrl, 500)) {
         return res.status(400).json({ message: 'avatarUrl debe ser texto' });
       }
       updates.avatarUrl = avatarUrl.trim();
@@ -148,7 +150,7 @@ export const getAllUsers = async (req, res, next) => {
   try {
     const users = await User.find()
       .select('-password')
-      .populate('clubHincha', 'name shortName')
+      .populate('clubHincha', 'name shortName logoUrl')
       .sort({ createdAt: -1 });
 
     res.json(users);
@@ -241,6 +243,32 @@ export const toggleFollow = async (req, res, next) => {
 
     await user.save();
     res.json({ following: user.following });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// El propio usuario borra su cuenta y sus datos; pide la contraseña como confirmación
+export const deleteMe = async (req, res, next) => {
+  try {
+    const { password } = req.body;
+    if (!isText(password)) {
+      return res.status(400).json({ message: 'Ingresá tu contraseña para confirmar' });
+    }
+    const user = await User.findById(req.user._id);
+    if (!(await user.comparePassword(password))) {
+      return res.status(401).json({ message: 'La contraseña no es correcta' });
+    }
+
+    const visits = await Visit.find({ user: user._id }).select('images');
+    await destroyImages(visits.flatMap((visit) => visit.images));
+    await Visit.deleteMany({ user: user._id });
+    await Report.deleteMany({ reporter: user._id });
+    await Visit.updateMany({ likes: user._id }, { $pull: { likes: user._id } });
+    await User.updateMany({ following: user._id }, { $pull: { following: user._id } });
+    await user.deleteOne();
+
+    res.json({ message: 'Cuenta eliminada' });
   } catch (error) {
     next(error);
   }

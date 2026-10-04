@@ -20,3 +20,13 @@ export const safeParse = (raw) => {
 };
 
 export const isNumberInRange = (value, min, max) => typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+
+// Texto no vacío (opcional) con largo máximo
+export const textWithin = (value, max) => isText(value) && value.length <= max;
+
+export const isEmailFormat = (value) => isText(value) && value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+// Usuario: 3 a 30 caracteres, letras, números, punto, guion bajo o guion
+export const isUsernameFormat = (value) => isText(value) && /^[a-zA-Z0-9_.-]{3,30}$/.test(value);
+
+export const isDateValue = (value) => !Number.isNaN(new Date(value).getTime());

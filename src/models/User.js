@@ -50,4 +50,7 @@ userSchema.set('toJSON', {
   },
 });
 
+userSchema.index({ following: 1 });
+userSchema.index({ savedVisits: 1 });
+
 export default mongoose.model('User', userSchema);

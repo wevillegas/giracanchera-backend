@@ -33,4 +33,9 @@ const visitSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Índices para las consultas de perfil, estadio y listas privadas
+visitSchema.index({ user: 1, createdAt: -1 });
+visitSchema.index({ stadium: 1, visitDate: -1 });
+visitSchema.index({ likes: 1 });
+
 export default mongoose.model('Visit', visitSchema);
