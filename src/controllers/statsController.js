@@ -131,7 +131,7 @@ export const getAdminStats = async (req, res, next) => {
       topReviewers, usersByWeek, visitsByDay,
     ] = await Promise.all([
       User.countDocuments(),
-      User.countDocuments({ rol: 'admin' }),
+      User.countDocuments({ rol: { $in: ['admin', 'superadmin'] } }),
       User.countDocuments({ createdAt: { $gte: since(7) } }),
       User.countDocuments({ createdAt: { $gte: since(30) } }),
       Visit.countDocuments({ createdAt: { $gte: since(30) } }),

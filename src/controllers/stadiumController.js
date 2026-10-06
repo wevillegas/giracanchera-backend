@@ -2,6 +2,7 @@ import { isText, isNumberInRange } from '../utils/validation.js';
 import Stadium from '../models/Stadium.js';
 import Visit from '../models/Visit.js';
 import User from '../models/User.js';
+import { logAudit } from '../utils/audit.js';
 
 // Valida solo los campos que llegan; devuelve un mensaje de error o null
 function checkStadiumInput(body) {
@@ -53,6 +54,7 @@ export const createStadium = async (req, res, next) => {
     if (inputError) return res.status(400).json({ message: inputError });
 
     const stadium = await Stadium.create(ownershipFields(pickStadiumFields(req.body)));
+    logAudit(req.user, { action: 'create', entity: 'stadium', entityId: stadium._id, summary: `Creó el estadio ${stadium.name}` });
     res.status(201).json(stadium);
   } catch (error) {
     next(error);
@@ -64,7 +66,8 @@ export const updateStadium = async (req, res, next) => {
     const inputError = checkStadiumInput(req.body);
     if (inputError) return res.status(400).json({ message: inputError });
 
-    const stadium = await Stadium.findByIdAndUpdate(req.params.id, ownershipFields(pickStadiumFields(req.body)), {
+    const updates = ownershipFields(pickStadiumFields(req.body));
+    const stadium = await Stadium.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
     }).populate('mainClub', 'name shortName logoUrl location');
@@ -72,6 +75,8 @@ export const updateStadium = async (req, res, next) => {
     if (!stadium) {
       return res.status(404).json({ message: 'Estadio no encontrado' });
     }
+
+    logAudit(req.user, { action: 'update', entity: 'stadium', entityId: stadium._id, summary: `Editó el estadio ${stadium.name}`, fields: Object.keys(updates) });
 
     res.json(stadium);
   } catch (error) {
@@ -91,6 +96,7 @@ export const deleteStadium = async (req, res, next) => {
     await Visit.deleteMany({ stadium: id });
     await User.updateMany({ wantToVisit: id }, { $pull: { wantToVisit: id } });
 
+    logAudit(req.user, { action: 'delete', entity: 'stadium', entityId: id, summary: `Eliminó el estadio ${stadium.name}` });
     res.json({ message: 'Estadio eliminado' });
   } catch (error) {
     next(error);

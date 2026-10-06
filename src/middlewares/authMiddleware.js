@@ -43,9 +43,17 @@ export const optionalProtect = async (req, res, next) => {
   next();
 };
 
+// Roles: 'user' < 'admin' < 'superadmin'. El superadmin hereda todo lo del admin.
 export const adminOnly = (req, res, next) => {
-  if (req.user && req.user.rol === 'admin') {
+  if (req.user && ['admin', 'superadmin'].includes(req.user.rol)) {
     return next();
   }
   return res.status(403).json({ message: 'Acceso restringido a administradores' });
+};
+
+export const superAdminOnly = (req, res, next) => {
+  if (req.user && req.user.rol === 'superadmin') {
+    return next();
+  }
+  return res.status(403).json({ message: 'Acceso restringido al superadministrador' });
 };

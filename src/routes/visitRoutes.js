@@ -12,6 +12,7 @@ import {
   reportVisit,
   getReports,
   resolveReport,
+  adminDeleteVisit,
 } from '../controllers/visitController.js';
 import { protect, adminOnly } from '../middlewares/authMiddleware.js';
 import { uploadVisitPhotos } from '../middlewares/uploadMiddleware.js';
@@ -28,6 +29,7 @@ router.post('/:id/save', protect, toggleSave);
 router.post('/:id/report', protect, reportVisit);
 router.get('/reports', protect, adminOnly, getReports);
 router.patch('/reports/:id', protect, adminOnly, resolveReport);
+router.delete('/admin/:id', protect, adminOnly, adminDeleteVisit);
 router.get('/user/:userId', getVisitsByUser);
 router.get('/stadium/:stadiumId', getVisitsByStadium);
 

@@ -9,6 +9,7 @@ import visitRoutes from './routes/visitRoutes.js';
 import clubRoutes from './routes/clubRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import statsRoutes from './routes/statsRoutes.js';
+import auditRoutes from './routes/auditRoutes.js';
 import { notFound, errorHandler } from './middlewares/errorMiddleware.js';
 
 const app = express();
@@ -68,6 +69,7 @@ app.use('/api/visits', visitRoutes);
 app.use('/api/clubs', clubRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/audit', auditRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

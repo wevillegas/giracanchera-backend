@@ -3,6 +3,7 @@ import User from '../models/User.js';
 import Visit from '../models/Visit.js';
 import Stadium from '../models/Stadium.js';
 import Report from '../models/Report.js';
+import { logAudit } from '../utils/audit.js';
 import { destroyImages } from './visitController.js';
 
 // Estadios distintos que el usuario ya visitó (según sus reseñas reales en la BD)
@@ -100,6 +101,7 @@ export const updateProfile = async (req, res, next) => {
       .select('-password')
       .populate('clubHincha', 'name logoUrl');
 
+    logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó su perfil @${user.username}`, fields: Object.keys(updates) });
     res.json(user);
   } catch (error) {
     next(error);
@@ -200,9 +202,25 @@ export const adminUpdateUser = async (req, res, next) => {
     const { nombre, username, email, rol, bio, clubHincha } = req.body;
     const updates = {};
 
-    // Un admin no puede quitarse a sí mismo el rol (evita dejar la app sin administradores desde la propia cuenta)
-    if (rol !== undefined && rol !== 'admin' && req.params.id === req.user._id.toString()) {
-      return res.status(400).json({ message: 'No podés quitarte tu propio rol de administrador' });
+    const isSuper = req.user.rol === 'superadmin';
+    const isSelf = req.params.id === req.user._id.toString();
+
+    const target = await User.findById(req.params.id).select('rol');
+    if (!target) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+    // Un admin no toca a otro admin ni a un superadmin; el superadmin puede tocar a cualquiera
+    if (!isSuper && !isSelf && target.rol === 'admin') {
+      return res.status(403).json({ message: 'No podés modificar a otro administrador' });
+    }
+    // Un superadmin no modifica a otro superadmin (sí a sí mismo)
+    if (target.rol === 'superadmin' && !isSelf) {
+      return res.status(403).json({ message: 'No podés modificar a otro superadministrador' });
+    }
+
+    // Nadie puede quitarse a sí mismo el rol (evita dejar la app sin administradores desde la propia cuenta)
+    if (rol !== undefined && rol !== req.user.rol && isSelf) {
+      return res.status(400).json({ message: 'No podés cambiar tu propio rol' });
     }
 
     if (nombre !== undefined) updates.nombre = nombre.trim();
@@ -210,8 +228,11 @@ export const adminUpdateUser = async (req, res, next) => {
     if (email !== undefined) updates.email = email.trim();
     if (bio !== undefined) updates.bio = bio.trim();
     if (rol !== undefined) {
-      if (!['user', 'admin'].includes(rol)) {
+      if (!['user', 'admin', 'superadmin'].includes(rol)) {
         return res.status(400).json({ message: 'rol inválido' });
+      }
+      if (rol === 'superadmin' && !isSuper) {
+        return res.status(403).json({ message: 'Solo el superadministrador puede asignar ese rol' });
       }
       updates.rol = rol;
     }
@@ -228,6 +249,7 @@ export const adminUpdateUser = async (req, res, next) => {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
+    logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó al usuario @${user.username}`, fields: Object.keys(updates) });
     res.json(user);
   } catch (error) {
     next(error);
@@ -242,14 +264,24 @@ export const adminDeleteUser = async (req, res, next) => {
       return res.status(400).json({ message: 'No podés eliminar tu propia cuenta' });
     }
 
-    const user = await User.findByIdAndDelete(id);
-    if (!user) {
+    const target = await User.findById(id).select('rol username');
+    if (!target) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
+    // Un superadmin nunca se elimina desde la API; un admin no elimina a otro admin
+    if (target.rol === 'superadmin') {
+      return res.status(403).json({ message: 'No se puede eliminar a un superadministrador' });
+    }
+    if (target.rol === 'admin' && req.user.rol !== 'superadmin') {
+      return res.status(403).json({ message: 'No podés eliminar a otro administrador' });
+    }
+
+    await User.findByIdAndDelete(id);
 
     await Visit.deleteMany({ user: id });
     await User.updateMany({ following: id }, { $pull: { following: id } });
 
+    logAudit(req.user, { action: 'delete', entity: 'user', entityId: id, summary: `Eliminó al usuario @${target.username}` });
     res.json({ message: 'Usuario eliminado' });
   } catch (error) {
     next(error);
@@ -304,6 +336,7 @@ export const deleteMe = async (req, res, next) => {
     await User.updateMany({ following: user._id }, { $pull: { following: user._id } });
     await user.deleteOne();
 
+    logAudit(user, { action: 'delete', entity: 'user', entityId: user._id, summary: `Eliminó su cuenta @${user.username}` });
     res.json({ message: 'Cuenta eliminada' });
   } catch (error) {
     next(error);

@@ -3,6 +3,7 @@ import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
 import { isText, isNumberInRange, safeParse, textWithin } from '../utils/validation.js';
 import Report from '../models/Report.js';
+import { logAudit } from '../utils/audit.js';
 
 const MAX_VISIT_PHOTOS = 4;
 const MAX_REVIEW_CHARS = 300;
@@ -130,6 +131,7 @@ export const createVisit = async (req, res, next) => {
 
     await User.findByIdAndUpdate(req.user._id, { $pull: { wantToVisit: stadium } });
 
+    logAudit(req.user, { action: 'create', entity: 'visit', entityId: visit._id, summary: 'Publicó una reseña' });
     res.status(201).json(visit);
   } catch (error) {
     next(error);
@@ -175,6 +177,7 @@ export const updateVisit = async (req, res, next) => {
 
     await visit.save();
     await destroyImages(removed);
+    logAudit(req.user, { action: 'update', entity: 'visit', entityId: visit._id, summary: 'Editó una reseña' });
     res.json(visit);
   } catch (error) {
     next(error);
@@ -193,6 +196,7 @@ export const deleteVisit = async (req, res, next) => {
 
     await visit.deleteOne();
     await User.updateMany({ savedVisits: visit._id }, { $pull: { savedVisits: visit._id } });
+    logAudit(req.user, { action: 'delete', entity: 'visit', entityId: visit._id, summary: 'Eliminó una reseña' });
     res.json({ message: 'Visita eliminada' });
   } catch (error) {
     next(error);
@@ -370,6 +374,31 @@ export const getReports = async (req, res, next) => {
   }
 };
 
+// Admin (y superadmin): borra cualquier reseña directamente, con motivo obligatorio (queda en la auditoría)
+export const adminDeleteVisit = async (req, res, next) => {
+  try {
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (reason.length < 5 || reason.length > 300) {
+      return res.status(400).json({ message: "El motivo debe tener entre 5 y 300 caracteres" });
+    }
+
+    const visit = await Visit.findById(req.params.id);
+    if (!visit) {
+      return res.status(404).json({ message: "Visita no encontrada" });
+    }
+
+    await destroyImages(visit.images);
+    await User.updateMany({ savedVisits: visit._id }, { $pull: { savedVisits: visit._id } });
+    await Report.deleteMany({ visit: visit._id });
+    await visit.deleteOne();
+
+    logAudit(req.user, { action: "delete", entity: "visit", entityId: visit._id, summary: `Eliminó una reseña (motivo: ${reason})` });
+    res.json({ message: "Reseña eliminada" });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Admin: descartar la denuncia o quitar la reseña (y con ella sus denuncias)
 export const resolveReport = async (req, res, next) => {
   try {
@@ -387,11 +416,13 @@ export const resolveReport = async (req, res, next) => {
         await visit.deleteOne();
       }
       await Report.deleteMany({ visit: report.visit });
+      logAudit(req.user, { action: 'resolve', entity: 'report', entityId: report._id, summary: 'Quitó una reseña denunciada' });
       return res.json({ message: 'Reseña eliminada' });
     }
     if (action === 'dismiss') {
       report.status = 'resolved';
       await report.save();
+      logAudit(req.user, { action: 'resolve', entity: 'report', entityId: report._id, summary: 'Descartó una denuncia' });
       return res.json({ message: 'Denuncia descartada' });
     }
     return res.status(400).json({ message: 'Acción inválida' });

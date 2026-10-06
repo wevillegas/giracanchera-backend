@@ -3,6 +3,7 @@ import {
 } from '../utils/validation.js';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
+import { logAudit } from '../utils/audit.js';
 
 const generateToken = (user) => {
   return jwt.sign({ id: user._id, v: user.tokenVersion ?? 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -51,6 +52,7 @@ export const register = async (req, res, next) => {
     });
     await user.populate('clubHincha', 'name logoUrl');
 
+    logAudit(user, { action: 'create', entity: 'user', entityId: user._id, summary: `Se registró @${user.username}` });
     res.status(201).json({
       user,
       token: generateToken(user),

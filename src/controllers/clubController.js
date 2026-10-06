@@ -2,6 +2,7 @@ import { textWithin } from '../utils/validation.js';
 import Club from '../models/Club.js';
 import Stadium from '../models/Stadium.js';
 import User from '../models/User.js';
+import { logAudit } from '../utils/audit.js';
 
 export const getClubs = async (req, res, next) => {
   try {
@@ -41,6 +42,7 @@ export const createClub = async (req, res, next) => {
     }
 
     const club = await Club.create(payload);
+    logAudit(req.user, { action: 'create', entity: 'club', entityId: club._id, summary: `Creó el club ${club.name}` });
     res.status(201).json(club);
   } catch (error) {
     next(error);
@@ -70,6 +72,7 @@ export const updateClub = async (req, res, next) => {
       return res.status(404).json({ message: 'Club no encontrado' });
     }
 
+    logAudit(req.user, { action: 'update', entity: 'club', entityId: club._id, summary: `Editó el club ${club.name}`, fields: Object.keys(updates) });
     res.json(club);
   } catch (error) {
     next(error);
@@ -88,6 +91,7 @@ export const deleteClub = async (req, res, next) => {
     await Stadium.updateMany({ mainClub: id }, { mainClub: null });
     await User.updateMany({ clubHincha: id }, { clubHincha: null });
 
+    logAudit(req.user, { action: 'delete', entity: 'club', entityId: id, summary: `Eliminó el club ${club.name}` });
     res.json({ message: 'Club eliminado' });
   } catch (error) {
     next(error);
