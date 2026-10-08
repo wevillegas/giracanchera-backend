@@ -26,7 +26,7 @@ const allowedOrigins = [
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
 // Detrás de un proxy (Render, Railway, etc.) el IP real llega en X-Forwarded-For
-if (process.env.TRUST_PROXY) app.set('trust proxy', 1);
+if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
 
 app.use(
   cors({

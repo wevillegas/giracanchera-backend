@@ -11,6 +11,9 @@ const usersData = [
 
 const seed = async () => {
   try {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Este seed crea usuarios con contraseñas conocidas: no se puede correr en producción.');
+    }
     await connectDB();
 
     for (const data of usersData) {

@@ -30,3 +30,15 @@ export const isEmailFormat = (value) => isText(value) && value.length <= 254 && 
 export const isUsernameFormat = (value) => isText(value) && /^[a-zA-Z0-9_.-]{3,30}$/.test(value);
 
 export const isDateValue = (value) => !Number.isNaN(new Date(value).getTime());
+
+// Solo URLs de Cloudinary: evita que un usuario ponga un link externo como avatar
+// (pixel de tracking para saber cuándo/quién mira su perfil)
+export const isCloudinaryUrl = (value) => {
+  if (!isText(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'res.cloudinary.com';
+  } catch {
+    return false;
+  }
+};

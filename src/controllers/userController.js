@@ -1,4 +1,4 @@
-import { isText, escapeRegex, textWithin } from '../utils/validation.js';
+import { isText, escapeRegex, textWithin, isCloudinaryUrl } from '../utils/validation.js';
 import User from '../models/User.js';
 import Visit from '../models/Visit.js';
 import Stadium from '../models/Stadium.js';
@@ -80,8 +80,8 @@ export const updateProfile = async (req, res, next) => {
     }
 
     if (avatarUrl !== undefined) {
-      if (!textWithin(avatarUrl, 500)) {
-        return res.status(400).json({ message: 'avatarUrl debe ser texto' });
+      if (!isCloudinaryUrl(avatarUrl.trim())) {
+        return res.status(400).json({ message: 'avatarUrl debe ser una URL de Cloudinary' });
       }
       updates.avatarUrl = avatarUrl.trim();
     }
