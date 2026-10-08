@@ -343,6 +343,32 @@ export const deleteMe = async (req, res, next) => {
   }
 };
 
+// Cambio de contraseña provisorio desde "editar perfil", hasta que exista confirmación por mail
+export const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!isText(currentPassword) || !isText(newPassword)) {
+      return res.status(400).json({ message: 'Completá tu contraseña actual y la nueva' });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: 'La nueva contraseña debe tener al menos 8 caracteres' });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!(await user.comparePassword(currentPassword))) {
+      return res.status(401).json({ message: 'La contraseña actual no es correcta' });
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    logAudit(user, { action: 'update', entity: 'user', entityId: user._id, summary: `Cambió su contraseña @${user.username}` });
+    res.json({ message: 'Contraseña actualizada' });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const EXPENSE_FIELDS = ['ticket', 'food', 'parking', 'transport'];
 const monthKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 
