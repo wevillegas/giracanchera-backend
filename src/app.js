@@ -22,8 +22,9 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
-// Encabezados de seguridad. Las imágenes vienen de Cloudinary, por eso el recurso se permite cross-origin
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+// Encabezados de seguridad. Esta API solo devuelve JSON (las imágenes están en Cloudinary,
+// no acá), así que no hace falta aflojar el CORP por defecto de helmet (same-origin).
+app.use(helmet());
 
 // Detrás de un proxy (Render, Railway, etc.) el IP real llega en X-Forwarded-For
 if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);

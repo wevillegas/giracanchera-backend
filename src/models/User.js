@@ -18,7 +18,7 @@ const userSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
-    password: { type: String, required: true, minlength: 6 },
+    password: { type: String, required: true, minlength: 8 },
     fechaNacimiento: { type: Date },
     clubHincha: { type: mongoose.Schema.Types.ObjectId, ref: 'Club' },
     rol: { type: String, enum: ['user', 'admin', 'superadmin'], default: 'user' },

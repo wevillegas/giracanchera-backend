@@ -1,4 +1,4 @@
-import { isText, escapeRegex, textWithin, isCloudinaryUrl } from '../utils/validation.js';
+import { isText, escapeRegex, textWithin, isCloudinaryUrl, isUsernameFormat, isEmailFormat } from '../utils/validation.js';
 import User from '../models/User.js';
 import Visit from '../models/Visit.js';
 import Stadium from '../models/Stadium.js';
@@ -224,8 +224,18 @@ export const adminUpdateUser = async (req, res, next) => {
     }
 
     if (nombre !== undefined) updates.nombre = nombre.trim();
-    if (username !== undefined) updates.username = username.trim();
-    if (email !== undefined) updates.email = email.trim();
+    if (username !== undefined) {
+      if (!isUsernameFormat(username)) {
+        return res.status(400).json({ message: 'El usuario debe tener entre 3 y 30 caracteres: letras, números, punto, guion o guion bajo' });
+      }
+      updates.username = username.trim();
+    }
+    if (email !== undefined) {
+      if (!isEmailFormat(email)) {
+        return res.status(400).json({ message: 'El email no es válido' });
+      }
+      updates.email = email.trim();
+    }
     if (bio !== undefined) updates.bio = bio.trim();
     if (rol !== undefined) {
       if (!['user', 'admin', 'superadmin'].includes(rol)) {
