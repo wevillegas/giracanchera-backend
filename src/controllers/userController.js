@@ -1,4 +1,4 @@
-import { isText, escapeRegex, textWithin, isCloudinaryUrl, isUsernameFormat, isEmailFormat } from '../utils/validation.js';
+import { isText, escapeRegex, textWithin, isCloudinaryUrl, isUsernameFormat, isEmailFormat, isPasswordFormat } from '../utils/validation.js';
 import User from '../models/User.js';
 import Visit from '../models/Visit.js';
 import Stadium from '../models/Stadium.js';
@@ -360,8 +360,8 @@ export const changePassword = async (req, res, next) => {
     if (!isText(currentPassword) || !isText(newPassword)) {
       return res.status(400).json({ message: 'Completá tu contraseña actual y la nueva' });
     }
-    if (newPassword.length < 8) {
-      return res.status(400).json({ message: 'La nueva contraseña debe tener al menos 8 caracteres' });
+    if (!isPasswordFormat(newPassword)) {
+      return res.status(400).json({ message: 'La nueva contraseña debe tener entre 8 y 128 caracteres, con al menos una letra y un número' });
     }
 
     const user = await User.findById(req.user._id);

@@ -31,6 +31,10 @@ export const isUsernameFormat = (value) => isText(value) && /^[a-zA-Z0-9_.-]{3,3
 
 export const isDateValue = (value) => !Number.isNaN(new Date(value).getTime());
 
+// Contraseña: 8-128 caracteres, al menos una letra y un número
+export const isPasswordFormat = (value) => isText(value) && value.length >= 8 && value.length <= 128
+  && /[a-zA-Z]/.test(value) && /\d/.test(value);
+
 // Solo URLs de Cloudinary: evita que un usuario ponga un link externo como avatar
 // (pixel de tracking para saber cuándo/quién mira su perfil)
 export const isCloudinaryUrl = (value) => {

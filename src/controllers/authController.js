@@ -1,5 +1,5 @@
 import {
-  isText, textWithin, isEmailFormat, isUsernameFormat, isDateValue,
+  isText, textWithin, isEmailFormat, isUsernameFormat, isDateValue, isPasswordFormat,
 } from '../utils/validation.js';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
@@ -27,8 +27,8 @@ export const register = async (req, res, next) => {
     if (!isEmailFormat(email)) {
       return res.status(400).json({ message: 'El email no es válido' });
     }
-    if (password.length < 8 || password.length > 128) {
-      return res.status(400).json({ message: 'La contraseña debe tener entre 8 y 128 caracteres' });
+    if (!isPasswordFormat(password)) {
+      return res.status(400).json({ message: 'La contraseña debe tener entre 8 y 128 caracteres, con al menos una letra y un número' });
     }
     if (nombre !== undefined && !textWithin(nombre, 80)) {
       return res.status(400).json({ message: 'El nombre no puede tener más de 80 caracteres' });
