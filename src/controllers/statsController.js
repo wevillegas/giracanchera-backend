@@ -101,6 +101,26 @@ export const getPublicStats = async (req, res, next) => {
     }
     const byPlace = [...provinceMap.values()].sort((a, b) => b.reviews - a.reviews);
 
+    // Hinchas por club: todos los clubes cargados (también los que no tienen ninguno), de más a menos
+    // El club no guarda país: se toma del país de su estadio (si tiene varios, el primero)
+    const [allClubs, clubStadiums, fansPerClub] = await Promise.all([
+      Club.find().select('name logoUrl'),
+      Stadium.find({ mainClub: { $ne: null } }).select('mainClub location.country'),
+      User.aggregate([
+        { $match: { clubHincha: { $ne: null } } },
+        { $group: { _id: '$clubHincha', fans: { $sum: 1 } } },
+      ]),
+    ]);
+    const fansById = new Map(fansPerClub.map((row) => [String(row._id), row.fans]));
+    const countryById = new Map();
+    for (const s of clubStadiums) {
+      const key = String(s.mainClub);
+      if (!countryById.has(key) && s.location?.country) countryById.set(key, s.location.country);
+    }
+    const clubFans = allClubs
+      .map((club) => ({ id: String(club._id), name: club.name, logoUrl: club.logoUrl || '', country: countryById.get(String(club._id)) || '', fans: fansById.get(String(club._id)) || 0 }))
+      .sort((a, b) => b.fans - a.fans || a.name.localeCompare(b.name, 'es'));
+
     const totals = {
       stadiums: stadiumCount,
       clubs: clubCount,
@@ -110,7 +130,7 @@ export const getPublicStats = async (req, res, next) => {
       avgExpense: median(expenseAvg.map((e) => e.total)),
     };
 
-    res.json({ totals, topReviewed, topRated, topClubs, byPlace });
+    res.json({ totals, topReviewed, topRated, topClubs, byPlace, clubFans });
   } catch (error) {
     next(error);
   }
