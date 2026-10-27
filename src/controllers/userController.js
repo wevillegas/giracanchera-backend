@@ -5,6 +5,24 @@ import Stadium from '../models/Stadium.js';
 import Report from '../models/Report.js';
 import { logAudit } from '../utils/audit.js';
 import { destroyImages } from './visitController.js';
+import { isValidClubRef, stadiumExists } from '../utils/refs.js';
+import { isObjectId } from '../utils/validation.js';
+
+// Borra la cuenta y todo lo que depende de ella: reseñas con sus fotos y denuncias, likes, seguidos,
+// guardadas de otros y el avatar. Lo usan tanto "borrar mi cuenta" como el borrado por un admin.
+async function purgeUser(user) {
+  const visits = await Visit.find({ user: user._id }).select('images');
+  const visitIds = visits.map((visit) => visit._id);
+  await destroyImages([...visits.flatMap((visit) => visit.images), user.avatarUrl].filter(Boolean));
+  await Promise.all([
+    Visit.deleteMany({ user: user._id }),
+    Report.deleteMany({ $or: [{ reporter: user._id }, { visit: { $in: visitIds } }] }),
+    Visit.updateMany({ likes: user._id }, { $pull: { likes: user._id } }),
+    User.updateMany({ following: user._id }, { $pull: { following: user._id } }),
+    User.updateMany({ savedVisits: { $in: visitIds } }, { $pull: { savedVisits: { $in: visitIds } } }),
+  ]);
+  await user.deleteOne();
+}
 
 // Estadios distintos que el usuario ya visitó (según sus reseñas reales en la BD)
 async function getVisitStats(userId) {
@@ -19,6 +37,9 @@ async function getVisitStats(userId) {
 
 // Escudo del club de hincha que se muestra junto a la foto en listas de usuarios
 const CLUB_BADGE = { path: 'clubHincha', select: 'name logoUrl' };
+
+// Campos que cualquiera puede ver de un perfil: sin email, guardadas, rol ni datos de sesión
+const PUBLIC_PROFILE_FIELDS = 'username nombre avatarUrl bio clubHincha fechaNacimiento following wantToVisit createdAt';
 
 // Marca en cada usuario de una lista si ya sigue al que mira (followsViewer)
 const withFollowsViewer = async (users, viewerId) => {
@@ -91,9 +112,14 @@ export const updateProfile = async (req, res, next) => {
     }
 
     if (clubHincha !== undefined) {
+      if (!(await isValidClubRef(clubHincha))) {
+        if (req.file) await destroyImages([req.file.path]);
+        return res.status(400).json({ message: 'El club elegido no existe' });
+      }
       updates.clubHincha = clubHincha || null;
     }
 
+    const previousAvatar = updates.avatarUrl && updates.avatarUrl !== req.user.avatarUrl ? req.user.avatarUrl : '';
     const user = await User.findByIdAndUpdate(req.user._id, updates, {
       new: true,
       runValidators: true,
@@ -101,6 +127,7 @@ export const updateProfile = async (req, res, next) => {
       .select('-password')
       .populate('clubHincha', 'name logoUrl');
 
+    if (previousAvatar) await destroyImages([previousAvatar]);
     logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó su perfil @${user.username}`, fields: Object.keys(updates) });
     res.json(user);
   } catch (error) {
@@ -132,7 +159,7 @@ export const searchUsers = async (req, res, next) => {
 export const getPublicProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.params.id)
-      .select('-email')
+      .select(PUBLIC_PROFILE_FIELDS)
       .populate('clubHincha', 'name shortName logoUrl')
       .populate({ path: 'following', select: 'username avatarUrl bio clubHincha', populate: CLUB_BADGE })
       .populate('wantToVisit', 'name location imageUrl');
@@ -167,18 +194,17 @@ export const getPublicProfile = async (req, res, next) => {
 export const toggleWantToVisit = async (req, res, next) => {
   try {
     const { stadiumId } = req.params;
-    const user = req.user;
-
-    const index = user.wantToVisit.findIndex((id) => id.toString() === stadiumId);
-
-    if (index === -1) {
-      user.wantToVisit.push(stadiumId);
-    } else {
-      user.wantToVisit.splice(index, 1);
+    if (!(await stadiumExists(stadiumId))) {
+      return res.status(404).json({ message: 'Estadio no encontrado' });
     }
 
-    await user.save();
-    res.json({ wantToVisit: user.wantToVisit });
+    const isWanted = req.user.wantToVisit.some((id) => id.toString() === stadiumId);
+    const { wantToVisit } = await User.findByIdAndUpdate(
+      req.user._id,
+      isWanted ? { $pull: { wantToVisit: stadiumId } } : { $addToSet: { wantToVisit: stadiumId } },
+      { new: true }
+    ).select('wantToVisit');
+    res.json({ wantToVisit });
   } catch (error) {
     next(error);
   }
@@ -187,7 +213,7 @@ export const toggleWantToVisit = async (req, res, next) => {
 export const getAllUsers = async (req, res, next) => {
   try {
     const users = await User.find()
-      .select('-password')
+      .select('-password -tokenVersion -savedVisits')
       .populate('clubHincha', 'name shortName logoUrl')
       .sort({ createdAt: -1 });
 
@@ -223,7 +249,10 @@ export const adminUpdateUser = async (req, res, next) => {
       return res.status(400).json({ message: 'No podés cambiar tu propio rol' });
     }
 
-    if (nombre !== undefined) updates.nombre = nombre.trim();
+    if (nombre !== undefined) {
+      if (!textWithin(nombre, 80)) return res.status(400).json({ message: 'El nombre debe ser texto de hasta 80 caracteres' });
+      updates.nombre = nombre.trim();
+    }
     if (username !== undefined) {
       if (!isUsernameFormat(username)) {
         return res.status(400).json({ message: 'El usuario debe tener entre 3 y 30 caracteres: letras, números, punto, guion o guion bajo' });
@@ -236,7 +265,10 @@ export const adminUpdateUser = async (req, res, next) => {
       }
       updates.email = email.trim();
     }
-    if (bio !== undefined) updates.bio = bio.trim();
+    if (bio !== undefined) {
+      if (!textWithin(bio, 300)) return res.status(400).json({ message: 'La bio debe ser texto de hasta 300 caracteres' });
+      updates.bio = bio.trim();
+    }
     if (rol !== undefined) {
       if (!['user', 'admin', 'superadmin'].includes(rol)) {
         return res.status(400).json({ message: 'rol inválido' });
@@ -245,8 +277,13 @@ export const adminUpdateUser = async (req, res, next) => {
         return res.status(403).json({ message: 'Solo el superadministrador puede asignar ese rol' });
       }
       updates.rol = rol;
+      // Cambio de rol: las sesiones abiertas de ese usuario se reinician
+      if (rol !== target.rol) updates.$inc = { tokenVersion: 1 };
     }
-    if (clubHincha !== undefined) updates.clubHincha = clubHincha || null;
+    if (clubHincha !== undefined) {
+      if (!(await isValidClubRef(clubHincha))) return res.status(400).json({ message: 'El club elegido no existe' });
+      updates.clubHincha = clubHincha || null;
+    }
 
     const user = await User.findByIdAndUpdate(req.params.id, updates, {
       new: true,
@@ -259,7 +296,7 @@ export const adminUpdateUser = async (req, res, next) => {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó al usuario @${user.username}`, fields: Object.keys(updates) });
+    logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó al usuario @${user.username}`, fields: Object.keys(updates).filter((k) => k !== '$inc') });
     res.json(user);
   } catch (error) {
     next(error);
@@ -274,7 +311,7 @@ export const adminDeleteUser = async (req, res, next) => {
       return res.status(400).json({ message: 'No podés eliminar tu propia cuenta' });
     }
 
-    const target = await User.findById(id).select('rol username');
+    const target = await User.findById(id).select('rol username avatarUrl');
     if (!target) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
@@ -286,10 +323,7 @@ export const adminDeleteUser = async (req, res, next) => {
       return res.status(403).json({ message: 'No podés eliminar a otro administrador' });
     }
 
-    await User.findByIdAndDelete(id);
-
-    await Visit.deleteMany({ user: id });
-    await User.updateMany({ following: id }, { $pull: { following: id } });
+    await purgeUser(target);
 
     logAudit(req.user, { action: 'delete', entity: 'user', entityId: id, summary: `Eliminó al usuario @${target.username}` });
     res.json({ message: 'Usuario eliminado' });
@@ -307,20 +341,17 @@ export const toggleFollow = async (req, res, next) => {
       return res.status(400).json({ message: 'No podés seguirte a vos mismo' });
     }
 
-    const target = await User.findById(userId);
-    if (!target) {
+    if (!isObjectId(userId) || !(await User.exists({ _id: userId }))) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    const index = user.following.findIndex((id) => id.toString() === userId);
-    if (index === -1) {
-      user.following.push(userId);
-    } else {
-      user.following.splice(index, 1);
-    }
-
-    await user.save();
-    res.json({ following: user.following });
+    const isFollowing = user.following.some((id) => id.toString() === userId);
+    const { following } = await User.findByIdAndUpdate(
+      user._id,
+      isFollowing ? { $pull: { following: userId } } : { $addToSet: { following: userId } },
+      { new: true }
+    ).select('following');
+    res.json({ following });
   } catch (error) {
     next(error);
   }
@@ -338,13 +369,7 @@ export const deleteMe = async (req, res, next) => {
       return res.status(401).json({ message: 'La contraseña no es correcta' });
     }
 
-    const visits = await Visit.find({ user: user._id }).select('images');
-    await destroyImages(visits.flatMap((visit) => visit.images));
-    await Visit.deleteMany({ user: user._id });
-    await Report.deleteMany({ reporter: user._id });
-    await Visit.updateMany({ likes: user._id }, { $pull: { likes: user._id } });
-    await User.updateMany({ following: user._id }, { $pull: { following: user._id } });
-    await user.deleteOne();
+    await purgeUser(user);
 
     logAudit(user, { action: 'delete', entity: 'user', entityId: user._id, summary: `Eliminó su cuenta @${user.username}` });
     res.json({ message: 'Cuenta eliminada' });
@@ -370,6 +395,8 @@ export const changePassword = async (req, res, next) => {
     }
 
     user.password = newPassword;
+    // Cierra las demás sesiones: un token robado deja de valer al cambiar la clave
+    user.tokenVersion += 1;
     await user.save();
 
     logAudit(user, { action: 'update', entity: 'user', entityId: user._id, summary: `Cambió su contraseña @${user.username}` });

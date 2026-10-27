@@ -1,12 +1,17 @@
-import { isText, isNumberInRange } from '../utils/validation.js';
+import { isText, isNumberInRange, isObjectId, isCloudinaryUrl } from '../utils/validation.js';
 import Stadium from '../models/Stadium.js';
 import Visit from '../models/Visit.js';
 import User from '../models/User.js';
+import Report from '../models/Report.js';
+import Club from '../models/Club.js';
 import { logAudit } from '../utils/audit.js';
+import { destroyImages } from './visitController.js';
 
 // Valida solo los campos que llegan; devuelve un mensaje de error o null
-function checkStadiumInput(body) {
-  const { name, capacity, location } = body;
+async function checkStadiumInput(body) {
+  const { name, capacity, location, imageUrl, mainClub } = body;
+  if (imageUrl !== undefined && imageUrl !== '' && !isCloudinaryUrl(imageUrl)) return 'La imagen debe ser una URL de Cloudinary';
+  if (mainClub && (!isObjectId(mainClub) || !(await Club.exists({ _id: mainClub })))) return 'El club elegido no existe';
   if (name !== undefined && (!isText(name) || name.trim().length === 0 || name.length > 120)) {
     return 'El nombre del estadio no es válido';
   }
@@ -50,7 +55,7 @@ export const getStadiums = async (req, res, next) => {
 
 export const createStadium = async (req, res, next) => {
   try {
-    const inputError = checkStadiumInput(req.body);
+    const inputError = await checkStadiumInput(req.body);
     if (inputError) return res.status(400).json({ message: inputError });
 
     const stadium = await Stadium.create(ownershipFields(pickStadiumFields(req.body)));
@@ -63,7 +68,7 @@ export const createStadium = async (req, res, next) => {
 
 export const updateStadium = async (req, res, next) => {
   try {
-    const inputError = checkStadiumInput(req.body);
+    const inputError = await checkStadiumInput(req.body);
     if (inputError) return res.status(400).json({ message: inputError });
 
     const updates = ownershipFields(pickStadiumFields(req.body));
@@ -93,8 +98,16 @@ export const deleteStadium = async (req, res, next) => {
       return res.status(404).json({ message: 'Estadio no encontrado' });
     }
 
-    await Visit.deleteMany({ stadium: id });
-    await User.updateMany({ wantToVisit: id }, { $pull: { wantToVisit: id } });
+    // Se van con el estadio sus reseñas, las fotos de ellas, sus denuncias y las guardadas de otros
+    const visits = await Visit.find({ stadium: id }).select('images');
+    const visitIds = visits.map((visit) => visit._id);
+    await destroyImages([...visits.flatMap((visit) => visit.images), stadium.imageUrl].filter(Boolean));
+    await Promise.all([
+      Visit.deleteMany({ stadium: id }),
+      Report.deleteMany({ visit: { $in: visitIds } }),
+      User.updateMany({ savedVisits: { $in: visitIds } }, { $pull: { savedVisits: { $in: visitIds } } }),
+      User.updateMany({ wantToVisit: id }, { $pull: { wantToVisit: id } }),
+    ]);
 
     logAudit(req.user, { action: 'delete', entity: 'stadium', entityId: id, summary: `Eliminó el estadio ${stadium.name}` });
     res.json({ message: 'Estadio eliminado' });
@@ -116,7 +129,8 @@ export const getStadiumById = async (req, res, next) => {
 
     const visits = await Visit.find({ stadium: stadium._id })
       .populate('user', 'username avatarUrl')
-      .sort({ visitDate: -1 });
+      .sort({ visitDate: -1 })
+      .limit(200);
 
     res.json({ stadium, visits });
   } catch (error) {

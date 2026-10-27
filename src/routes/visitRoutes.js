@@ -15,12 +15,12 @@ import {
   adminDeleteVisit,
 } from '../controllers/visitController.js';
 import { protect, adminOnly } from '../middlewares/authMiddleware.js';
-import { uploadVisitPhotos } from '../middlewares/uploadMiddleware.js';
+import { uploadVisitPhotos, uploadLimiter } from '../middlewares/uploadMiddleware.js';
 
 const router = Router();
 
-router.post('/', protect, uploadVisitPhotos.array('photos', 4), createVisit);
-router.put('/:id', protect, uploadVisitPhotos.array('photos', 4), updateVisit);
+router.post('/', protect, uploadLimiter, uploadVisitPhotos.array('photos', 4), createVisit);
+router.put('/:id', protect, uploadLimiter, uploadVisitPhotos.array('photos', 4), updateVisit);
 router.delete('/:id', protect, deleteVisit);
 router.get('/saved', protect, getSavedVisits);
 router.get('/liked', protect, getLikedVisits);

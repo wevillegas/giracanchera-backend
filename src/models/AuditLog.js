@@ -13,6 +13,7 @@ const auditLogSchema = new mongoose.Schema(
   { timestamps: { createdAt: true, updatedAt: false } }
 );
 
-auditLogSchema.index({ createdAt: -1 });
+// Se borran solos a los 180 días. Índice ascendente: Mongo lo recorre al revés para el orden más reciente primero.
+auditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 180 * 24 * 60 * 60 });
 
 export default mongoose.model('AuditLog', auditLogSchema);

@@ -3,6 +3,7 @@ import Club from '../models/Club.js';
 import Stadium from '../models/Stadium.js';
 import User from '../models/User.js';
 import { logAudit } from '../utils/audit.js';
+import { destroyImages } from './visitController.js';
 
 export const getClubs = async (req, res, next) => {
   try {
@@ -63,14 +64,17 @@ export const updateClub = async (req, res, next) => {
       updates.logoUrl = req.file.path;
     }
 
+    const previous = req.file ? await Club.findById(req.params.id).select('logoUrl') : null;
     const club = await Club.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
     });
 
     if (!club) {
+      if (req.file) await destroyImages([req.file.path]);
       return res.status(404).json({ message: 'Club no encontrado' });
     }
+    if (previous?.logoUrl) await destroyImages([previous.logoUrl]);
 
     logAudit(req.user, { action: 'update', entity: 'club', entityId: club._id, summary: `Editó el club ${club.name}`, fields: Object.keys(updates) });
     res.json(club);
@@ -88,6 +92,7 @@ export const deleteClub = async (req, res, next) => {
       return res.status(404).json({ message: 'Club no encontrado' });
     }
 
+    if (club.logoUrl) await destroyImages([club.logoUrl]);
     await Stadium.updateMany({ mainClub: id }, { mainClub: null });
     await User.updateMany({ clubHincha: id }, { clubHincha: null });
 

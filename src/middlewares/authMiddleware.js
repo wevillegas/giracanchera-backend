@@ -1,15 +1,23 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
+export const COOKIE_NAME = 'gc_token';
+
+// El token llega por la cookie httpOnly de la web, o por Authorization: Bearer (Postman, scripts)
+function tokenFrom(req) {
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) return authHeader.split(' ')[1];
+  const pair = (req.headers.cookie || '').split(';').map((c) => c.trim()).find((c) => c.startsWith(`${COOKIE_NAME}=`));
+  return pair ? decodeURIComponent(pair.slice(COOKIE_NAME.length + 1)) : null;
+}
+
 export const protect = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const token = tokenFrom(req);
+    if (!token) {
       return res.status(401).json({ message: 'No autorizado, token no provisto' });
     }
 
-    const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const user = await User.findById(decoded.id).select('-password');
@@ -30,11 +38,11 @@ export const protect = async (req, res, next) => {
 
 // Para rutas públicas que cambian según quién mira: si hay sesión válida, deja req.user; si no, sigue sin usuario
 export const optionalProtect = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return next();
+  const token = tokenFrom(req);
+  if (!token) return next();
 
   try {
-    const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id).select('-password');
     if (user && (decoded.v ?? 0) === (user.tokenVersion ?? 0)) req.user = user;
   } catch {

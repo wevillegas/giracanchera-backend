@@ -5,16 +5,40 @@
 // demasiado tarde y Cloudinary queda configurado con variables undefined.
 import 'dotenv/config';
 
+import mongoose from 'mongoose';
 import app from './app.js';
 import connectDB from './config/db.js';
 
 const PORT = process.env.PORT || 5000;
 
+// Un secreto corto o ausente deja las sesiones expuestas a fuerza bruta: en producción no se arranca así
+const secret = process.env.JWT_SECRET;
+if (!secret || secret.length < 32) {
+  const problem = 'JWT_SECRET debe tener al menos 32 caracteres (usá 64 bytes aleatorios en hex)';
+  if (!secret || process.env.NODE_ENV === 'production') {
+    console.error(problem);
+    process.exit(1);
+  }
+  console.warn(`Aviso: ${problem}`);
+}
+
 const startServer = async () => {
   await connectDB();
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
   });
+
+  // Apagado ordenado: termina los requests en curso y cierra la base antes de salir
+  const shutdown = (signal) => {
+    console.log(`${signal} recibido, cerrando...`);
+    server.close(async () => {
+      await mongoose.disconnect();
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 };
 
 startServer();

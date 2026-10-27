@@ -26,3 +26,15 @@ test('ruta inexistente devuelve 404', async () => {
     server.close();
   }
 });
+
+test('POST desde un origen no permitido responde 403', async () => {
+  const server = app.listen(0);
+  const { port } = server.address();
+
+  try {
+    const res = await fetch(`http://localhost:${port}/api/auth/logout`, { method: 'POST', headers: { Origin: 'https://sitio-malo.com' } });
+    assert.equal(res.status, 403);
+  } finally {
+    server.close();
+  }
+});

@@ -14,12 +14,12 @@ import {
   changePassword,
 } from '../controllers/userController.js';
 import { protect, adminOnly, optionalProtect } from '../middlewares/authMiddleware.js';
-import { uploadAvatar } from '../middlewares/uploadMiddleware.js';
+import { uploadAvatar, uploadLimiter } from '../middlewares/uploadMiddleware.js';
 
 const router = Router();
 
 router.get('/profile', protect, getProfile);
-router.put('/profile', protect, uploadAvatar.single('avatar'), updateProfile);
+router.put('/profile', protect, uploadLimiter, uploadAvatar.single('avatar'), updateProfile);
 router.get('/search', protect, searchUsers);
 router.delete('/me', protect, deleteMe);
 router.put('/me/password', protect, changePassword);

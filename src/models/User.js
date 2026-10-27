@@ -23,7 +23,7 @@ const userSchema = new mongoose.Schema(
     clubHincha: { type: mongoose.Schema.Types.ObjectId, ref: 'Club' },
     rol: { type: String, enum: ['user', 'admin', 'superadmin'], default: 'user' },
     avatarUrl: { type: String, default: '' },
-    bio: { type: String, default: '' },
+    bio: { type: String, default: '', maxlength: 300 },
     following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     wantToVisit: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Stadium' }],
     savedVisits: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Visit' }],

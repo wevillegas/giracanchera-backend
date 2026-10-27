@@ -15,10 +15,9 @@ import { notFound, errorHandler } from './middlewares/errorMiddleware.js';
 const app = express();
 
 // Lista blanca de URLs permitidas para desarrollo y producción
+const devOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175'];
 const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:5175',
+  ...(process.env.NODE_ENV === 'production' ? [] : devOrigins),
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -26,8 +25,12 @@ const allowedOrigins = [
 // no acá), así que no hace falta aflojar el CORP por defecto de helmet (same-origin).
 app.use(helmet());
 
-// Detrás de un proxy (Render, Railway, etc.) el IP real llega en X-Forwarded-For
-if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+// Detrás de un proxy (Render, Railway, etc.) el IP real llega en X-Forwarded-For.
+// Sin esto todos los usuarios comparten la IP del proxy y el rate limit los cuenta juntos.
+// TRUST_PROXY = cantidad de proxies delante: 'true' o 1 si solo está Render; 2 si además va detrás del rewrite de Vercel.
+const trustProxy = process.env.TRUST_PROXY;
+if (trustProxy === 'true') app.set('trust proxy', 1);
+else if (/^\d+$/.test(trustProxy || '')) app.set('trust proxy', Number(trustProxy));
 
 app.use(
   cors({
@@ -38,6 +41,15 @@ app.use(
     credentials: true,
   })
 );
+
+// Con sesión por cookie, un pedido que modifica datos solo vale si viene de nuestro frontend
+// (segunda defensa además de SameSite=Lax). Sin Origin (Postman, curl) no hay navegador que engañar.
+app.use((req, res, next) => {
+  const safeMethod = ['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+  const { origin } = req.headers;
+  if (safeMethod || !origin || allowedOrigins.includes(origin)) return next();
+  return res.status(403).json({ message: 'Origen no permitido' });
+});
 
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true, limit: '100kb' }));
@@ -64,7 +76,9 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use('/api', apiLimiter);
-app.use('/api/auth', authLimiter, authRoutes);
+// Solo login y registro: /me y /logout los llama el frontend en cada carga de página
+app.use(['/api/auth/login', '/api/auth/register'], authLimiter);
+app.use('/api/auth', authRoutes);
 app.use('/api/stadiums', stadiumRoutes);
 app.use('/api/visits', visitRoutes);
 app.use('/api/clubs', clubRoutes);

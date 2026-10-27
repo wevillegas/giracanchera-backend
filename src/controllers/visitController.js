@@ -4,13 +4,16 @@ import cloudinary from '../config/cloudinary.js';
 import { isText, isNumberInRange, safeParse, textWithin } from '../utils/validation.js';
 import Report from '../models/Report.js';
 import { logAudit } from '../utils/audit.js';
+import { stadiumExists } from '../utils/refs.js';
 
 const MAX_VISIT_PHOTOS = 4;
 const MAX_REVIEW_CHARS = 300;
 const REVIEW_TOO_LONG = `La reseña no puede tener más de ${MAX_REVIEW_CHARS} caracteres`;
-// Paginación opcional: ?page=N&limit=M (máximo 100). Sin parámetros se devuelve todo.
+// Paginación: ?page=N&limit=M (máximo 200). Sin limit se devuelven 200 reseñas,
+// para que un estadio o perfil con miles de reseñas no devuelva todo en un solo request.
+const DEFAULT_LIMIT = 200;
 function paginationFrom(req) {
-  const limit = Math.min(Number.parseInt(req.query.limit, 10) || 0, 100);
+  const limit = Math.min(Number.parseInt(req.query.limit, 10) || DEFAULT_LIMIT, DEFAULT_LIMIT);
   const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
   return {
     query: (q) => (limit > 0 ? q.skip((page - 1) * limit).limit(limit) : q),
@@ -117,6 +120,7 @@ export const createVisit = async (req, res, next) => {
     }
     const check = checkVisitInput(req.body);
     if (check.error) return fail(check.error);
+    if (!(await stadiumExists(stadium))) return fail('El estadio no existe');
 
     const visit = await Visit.create({
       user: req.user._id,
@@ -245,15 +249,15 @@ export const toggleLike = async (req, res, next) => {
       return res.status(400).json({ message: 'No podés darle me gusta a tu propia reseña' });
     }
 
-    const index = visit.likes.findIndex((id) => id.toString() === req.user.id);
-    if (index === -1) {
-      visit.likes.push(req.user._id);
-    } else {
-      visit.likes.splice(index, 1);
-    }
-    await visit.save();
+    // Operación atómica: dos clics rápidos no duplican ni pierden el me gusta
+    const liked = !visit.likes.some((id) => id.toString() === req.user.id);
+    const updated = await Visit.findByIdAndUpdate(
+      visit._id,
+      liked ? { $addToSet: { likes: req.user._id } } : { $pull: { likes: req.user._id } },
+      { new: true }
+    ).select('likes');
 
-    res.json({ liked: index === -1, likesCount: visit.likes.length });
+    res.json({ liked, likesCount: updated.likes.length });
   } catch (error) {
     next(error);
   }
@@ -270,14 +274,11 @@ export const toggleSave = async (req, res, next) => {
       return res.status(400).json({ message: 'No podés guardar tu propia reseña' });
     }
 
-    const user = await User.findById(req.user._id);
-    const isSaved = user.savedVisits.some((id) => id.toString() === visit._id.toString());
-    if (isSaved) {
-      user.savedVisits.pull(visit._id);
-    } else {
-      user.savedVisits.push(visit._id);
-    }
-    await user.save();
+    const isSaved = Boolean(await User.exists({ _id: req.user._id, savedVisits: visit._id }));
+    await User.updateOne(
+      { _id: req.user._id },
+      isSaved ? { $pull: { savedVisits: visit._id } } : { $addToSet: { savedVisits: visit._id } }
+    );
 
     res.json({ saved: !isSaved });
   } catch (error) {

@@ -7,12 +7,12 @@ import {
   getStadiumById,
 } from '../controllers/stadiumController.js';
 import { protect, adminOnly } from '../middlewares/authMiddleware.js';
-import { uploadStadiumImage } from '../middlewares/uploadMiddleware.js';
+import { uploadStadiumImage, uploadLimiter } from '../middlewares/uploadMiddleware.js';
 
 const router = Router();
 
 router.get('/', getStadiums);
-router.post('/image', protect, adminOnly, uploadStadiumImage.single('image'), (req, res) => {
+router.post('/image', protect, adminOnly, uploadLimiter, uploadStadiumImage.single('image'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: 'Falta la imagen' });
   }

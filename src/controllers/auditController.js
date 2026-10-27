@@ -1,6 +1,6 @@
 import AuditLog from '../models/AuditLog.js';
 
-const PAGE_SIZE = 5;
+const PAGE_SIZE = 20;
 const ENTITIES = ['stadium', 'club', 'user', 'visit', 'report'];
 
 // Solo admin: lista de cambios, más recientes primero. El filtro se valida contra una lista fija

@@ -29,6 +29,9 @@ export const isEmailFormat = (value) => isText(value) && value.length <= 254 && 
 // Usuario: 3 a 30 caracteres, letras, números, punto, guion bajo o guion
 export const isUsernameFormat = (value) => isText(value) && /^[a-zA-Z0-9_.-]{3,30}$/.test(value);
 
+// Id de Mongo en texto (24 hex): evita CastError y ids basura en listas
+export const isObjectId = (value) => isText(value) && /^[a-f\d]{24}$/i.test(value);
+
 export const isDateValue = (value) => !Number.isNaN(new Date(value).getTime());
 
 // Contraseña: 8-128 caracteres, al menos una letra y un número

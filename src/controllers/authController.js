@@ -2,11 +2,29 @@ import {
   isText, textWithin, isEmailFormat, isUsernameFormat, isDateValue, isPasswordFormat,
 } from '../utils/validation.js';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import { logAudit } from '../utils/audit.js';
+import { COOKIE_NAME } from '../middlewares/authMiddleware.js';
+import { isValidClubRef } from '../utils/refs.js';
+
+// Hash de relleno: login compara siempre, exista o no el usuario, para que el tiempo no delate cuentas
+const DUMMY_HASH = bcrypt.hashSync('relleno', 10);
 
 const generateToken = (user) => {
   return jwt.sign({ id: user._id, v: user.tokenVersion ?? 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
+};
+
+const cookieOptions = {
+  httpOnly: true, // el JS de la página no puede leerla: un XSS no roba la sesión
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax', // no viaja en pedidos que vienen de otros sitios (frena CSRF)
+  path: '/',
+};
+
+// La sesión va en una cookie; el token no se devuelve en el cuerpo
+const startSession = (res, user) => {
+  res.cookie(COOKIE_NAME, generateToken(user), { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
 };
 
 export const register = async (req, res, next) => {
@@ -37,6 +55,10 @@ export const register = async (req, res, next) => {
       return res.status(400).json({ message: 'La fecha de nacimiento no es válida' });
     }
 
+    if (!(await isValidClubRef(clubHincha))) {
+      return res.status(400).json({ message: 'El club elegido no existe' });
+    }
+
     const existingUser = await User.findOne({ $or: [{ email }, { username }] });
     if (existingUser) {
       return res.status(400).json({ message: 'El usuario o email ya está registrado' });
@@ -53,10 +75,8 @@ export const register = async (req, res, next) => {
     await user.populate('clubHincha', 'name logoUrl');
 
     logAudit(user, { action: 'create', entity: 'user', entityId: user._id, summary: `Se registró @${user.username}` });
-    res.status(201).json({
-      user,
-      token: generateToken(user),
-    });
+    startSession(res, user);
+    res.status(201).json({ user });
   } catch (error) {
     next(error);
   }
@@ -74,15 +94,14 @@ export const login = async (req, res, next) => {
     }
 
     const user = await User.findOne(email ? { email } : { username });
-    if (!user || !(await user.comparePassword(password))) {
+    const passwordOk = user ? await user.comparePassword(password) : await bcrypt.compare(password, DUMMY_HASH).then(() => false);
+    if (!passwordOk) {
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
     await user.populate('clubHincha', 'name logoUrl');
 
-    res.json({
-      user,
-      token: generateToken(user),
-    });
+    startSession(res, user);
+    res.json({ user });
   } catch (error) {
     next(error);
   }
@@ -104,6 +123,7 @@ export const getMe = async (req, res, next) => {
 export const logout = async (req, res, next) => {
   try {
     await User.updateOne({ _id: req.user._id }, { $inc: { tokenVersion: 1 } });
+    res.clearCookie(COOKIE_NAME, cookieOptions);
     res.json({ message: 'Sesión cerrada' });
   } catch (error) {
     next(error);
