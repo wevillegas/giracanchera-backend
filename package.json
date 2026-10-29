@@ -9,6 +9,7 @@
     "start": "node src/server.js",
     "seed": "node src/utils/seed.js",
     "seed:users": "node src/utils/seedUsers.js",
+    "import:wikidata": "node src/utils/importWikidata.js",
     "test": "node --test \"src/**/*.test.js\""
   },
   "repository": {

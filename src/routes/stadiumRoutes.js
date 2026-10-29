@@ -5,7 +5,9 @@ import {
   updateStadium,
   deleteStadium,
   getStadiumById,
+  getDrafts,
 } from '../controllers/stadiumController.js';
+import { createSuggestion, getSuggestions, resolveSuggestion } from '../controllers/suggestionController.js';
 import { protect, adminOnly } from '../middlewares/authMiddleware.js';
 import { uploadStadiumImage, uploadLimiter } from '../middlewares/uploadMiddleware.js';
 
@@ -21,6 +23,10 @@ router.post('/image', protect, adminOnly, uploadLimiter, uploadStadiumImage.sing
 router.post('/', protect, adminOnly, createStadium);
 router.put('/:id', protect, adminOnly, updateStadium);
 router.delete('/:id', protect, adminOnly, deleteStadium);
+router.get('/drafts', protect, adminOnly, getDrafts);
+router.get('/suggestions', protect, adminOnly, getSuggestions);
+router.patch('/suggestions/:id', protect, adminOnly, resolveSuggestion);
+router.post('/:id/suggestions', protect, createSuggestion);
 router.get('/:id', getStadiumById);
 
 export default router;

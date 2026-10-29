@@ -6,10 +6,13 @@ import Report from '../models/Report.js';
 import Club from '../models/Club.js';
 import { logAudit } from '../utils/audit.js';
 import { destroyImages } from './visitController.js';
+import { FICHA_FIELDS, checkFichaInput, syncCover, removedPhotoUrls } from '../utils/stadiumFicha.js';
 
 // Valida solo los campos que llegan; devuelve un mensaje de error o null
 async function checkStadiumInput(body) {
   const { name, capacity, location, imageUrl, mainClub } = body;
+  const fichaError = checkFichaInput(body);
+  if (fichaError) return fichaError;
   if (imageUrl !== undefined && imageUrl !== '' && !isCloudinaryUrl(imageUrl)) return 'La imagen debe ser una URL de Cloudinary';
   if (mainClub && (!isObjectId(mainClub) || !(await Club.exists({ _id: mainClub })))) return 'El club elegido no existe';
   if (name !== undefined && (!isText(name) || name.trim().length === 0 || name.length > 120)) {
@@ -33,9 +36,9 @@ async function checkStadiumInput(body) {
 }
 
 // Solo se guardan los campos que el admin puede modificar (evita mass assignment)
-const STADIUM_FIELDS = ['name', 'capacity', 'location', 'ownerType', 'mainClub', 'imageUrl'];
+const STADIUM_FIELDS = ['name', 'capacity', 'location', 'ownerType', 'mainClub', 'imageUrl', ...FICHA_FIELDS];
 function pickStadiumFields(body) {
-  return Object.fromEntries(STADIUM_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
+  return syncCover(Object.fromEntries(STADIUM_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]])));
 }
 
 // Un estadio de la provincia no tiene club dueño; el resto puede tener mainClub o quedar sin dueño
@@ -48,6 +51,16 @@ export const getStadiums = async (req, res, next) => {
   try {
     const stadiums = await Stadium.find().populate('mainClub', 'name shortName logoUrl location');
     res.json(stadiums);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Sugerencias de Wikidata pendientes de revisar (solo admin)
+export const getDrafts = async (req, res, next) => {
+  try {
+    const stadiums = await Stadium.find({ wikidataDraft: { $ne: null } }).select('+wikidataDraft');
+    res.json(stadiums.map((stadium) => ({ _id: stadium._id, draft: stadium.wikidataDraft })));
   } catch (error) {
     next(error);
   }
@@ -72,6 +85,10 @@ export const updateStadium = async (req, res, next) => {
     if (inputError) return res.status(400).json({ message: inputError });
 
     const updates = ownershipFields(pickStadiumFields(req.body));
+    if (req.body.clearDraft === true) updates.wikidataDraft = null; // el admin ya revisó la sugerencia de Wikidata
+    const previous = await Stadium.findById(req.params.id);
+    if (!previous) return res.status(404).json({ message: 'Estadio no encontrado' });
+
     const stadium = await Stadium.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
@@ -80,6 +97,9 @@ export const updateStadium = async (req, res, next) => {
     if (!stadium) {
       return res.status(404).json({ message: 'Estadio no encontrado' });
     }
+
+    // Las fotos quitadas se borran también de Cloudinary
+    await destroyImages(removedPhotoUrls(previous, updates));
 
     logAudit(req.user, { action: 'update', entity: 'stadium', entityId: stadium._id, summary: `Editó el estadio ${stadium.name}`, fields: Object.keys(updates) });
 
@@ -101,7 +121,7 @@ export const deleteStadium = async (req, res, next) => {
     // Se van con el estadio sus reseñas, las fotos de ellas, sus denuncias y las guardadas de otros
     const visits = await Visit.find({ stadium: id }).select('images');
     const visitIds = visits.map((visit) => visit._id);
-    await destroyImages([...visits.flatMap((visit) => visit.images), stadium.imageUrl].filter(Boolean));
+    await destroyImages([...visits.flatMap((visit) => visit.images), stadium.imageUrl, ...stadium.photos.map((photo) => photo.url)].filter(Boolean));
     await Promise.all([
       Visit.deleteMany({ stadium: id }),
       Report.deleteMany({ visit: { $in: visitIds } }),
