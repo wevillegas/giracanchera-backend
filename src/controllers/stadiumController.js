@@ -6,6 +6,7 @@ import Report from '../models/Report.js';
 import Club from '../models/Club.js';
 import { logAudit } from '../utils/audit.js';
 import { destroyImages } from './visitController.js';
+import { importDrafts } from '../utils/wikidataImport.js';
 import { FICHA_FIELDS, checkFichaInput, syncCover, removedPhotoUrls } from '../utils/stadiumFicha.js';
 
 // Valida solo los campos que llegan; devuelve un mensaje de error o null
@@ -65,6 +66,25 @@ export const getDrafts = async (req, res, next) => {
     next(error);
   }
 };
+
+// Búsqueda en Wikidata lanzada desde el panel. Tarda (hay una pausa entre estadios), así que corre en segundo plano
+// y el panel consulta el avance. ponytail: estado en memoria, se pierde si el servidor reinicia o hay varias instancias.
+let wikidataJob = { status: 'idle' };
+
+export const startWikidataImport = (req, res) => {
+  if (wikidataJob.status === 'running') return res.status(409).json({ message: 'Ya hay una búsqueda en curso', job: wikidataJob });
+  wikidataJob = { status: 'running', done: 0, total: 0, saved: 0, failed: 0, startedAt: new Date() };
+  logAudit(req.user, { action: 'update', entity: 'stadium', summary: 'Inició la búsqueda de datos en Wikidata' });
+  importDrafts({ onProgress: (progress) => { wikidataJob = { ...wikidataJob, ...progress }; } })
+    .then((result) => { wikidataJob = { ...wikidataJob, ...result, status: 'done', finishedAt: new Date() }; })
+    .catch((error) => {
+      console.error('Falló la búsqueda en Wikidata:', error.message);
+      wikidataJob = { ...wikidataJob, status: 'error', finishedAt: new Date() };
+    });
+  res.status(202).json(wikidataJob);
+};
+
+export const getWikidataImport = (req, res) => res.json(wikidataJob);
 
 export const createStadium = async (req, res, next) => {
   try {
