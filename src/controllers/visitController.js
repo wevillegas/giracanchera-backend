@@ -1,4 +1,7 @@
+import mongoose from 'mongoose';
 import Visit from '../models/Visit.js';
+import Stadium from '../models/Stadium.js';
+import Club from '../models/Club.js';
 import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
 import { isText, isNumberInRange, safeParse, textWithin } from '../utils/validation.js';
@@ -18,6 +21,12 @@ function paginationFrom(req) {
   return {
     query: (q) => (limit > 0 ? q.skip((page - 1) * limit).limit(limit) : q),
   };
+}
+
+// Cuenta silenciada por un admin: no puede publicar ni editar reseñas hasta esa fecha
+function mutedError(user) {
+  if (!user?.mutedUntil || user.mutedUntil <= new Date()) return null;
+  return `Tu cuenta está silenciada hasta el ${user.mutedUntil.toLocaleDateString('es-AR')}: no podés publicar ni editar reseñas`;
 }
 
 const MATCH_SAME_TEAM = 'El local y el visitante no pueden ser el mismo club';
@@ -106,6 +115,11 @@ function checkVisitInput({ visitDate, rating, reviewText, matchDetails, expenses
 
 export const createVisit = async (req, res, next) => {
   try {
+    const muted = mutedError(req.user);
+    if (muted) {
+      await destroyImages((req.files || []).map((f) => f.path));
+      return res.status(403).json({ message: muted });
+    }
     const { stadium, visitDate, rating, reviewText } = req.body;
     const files = req.files || [];
 
@@ -144,6 +158,11 @@ export const createVisit = async (req, res, next) => {
 
 export const updateVisit = async (req, res, next) => {
   try {
+    const muted = mutedError(req.user);
+    if (muted) {
+      await destroyImages((req.files || []).map((f) => f.path));
+      return res.status(403).json({ message: muted });
+    }
     const visit = await Visit.findById(req.params.id);
     if (!visit) {
       return res.status(404).json({ message: 'Visita no encontrada' });
@@ -210,7 +229,7 @@ export const deleteVisit = async (req, res, next) => {
 export const getVisitsByUser = async (req, res, next) => {
   try {
     const { query: pageQuery } = paginationFrom(req);
-    const visits = await pageQuery(Visit.find({ user: req.params.userId }))
+    const visits = await pageQuery(Visit.find({ user: req.params.userId, hidden: { $ne: true } }))
       .populate({
         path: 'stadium',
         select: 'name imageUrl location mainClub',
@@ -228,7 +247,7 @@ export const getVisitsByUser = async (req, res, next) => {
 export const getVisitsByStadium = async (req, res, next) => {
   try {
     const { query: pageQuery } = paginationFrom(req);
-    const visits = await pageQuery(Visit.find({ stadium: req.params.stadiumId }))
+    const visits = await pageQuery(Visit.find({ stadium: req.params.stadiumId, hidden: { $ne: true } }))
       .populate('user', 'username avatarUrl')
       .sort({ visitDate: -1 });
 
@@ -319,7 +338,7 @@ export const getSavedVisits = async (req, res, next) => {
 // Privadas: reseñas de otros a las que el usuario logueado les dio me gusta
 export const getLikedVisits = async (req, res, next) => {
   try {
-    const visits = await populateVisitCard(Visit.find({ likes: req.user._id }).sort({ visitDate: -1 }));
+    const visits = await populateVisitCard(Visit.find({ likes: req.user._id, hidden: { $ne: true } }).sort({ visitDate: -1 }));
     res.json(visits);
   } catch (error) {
     next(error);
@@ -366,10 +385,93 @@ export const getReports = async (req, res, next) => {
         select: 'reviewText rating visitDate user stadium',
         populate: [
           { path: 'user', select: 'username' },
-          { path: 'stadium', select: 'name' },
+          { path: 'stadium', select: 'name mainClub', populate: { path: 'mainClub', select: 'name logoUrl' } },
         ],
       });
-    res.json(reports);
+    // Reincidencia: cuántas denuncias (abiertas o ya resueltas) tienen en total las reseñas de cada autor
+    const authorIds = [...new Set(reports.map((r) => r.visit?.user?._id).filter(Boolean).map(String))].map((id) => new mongoose.Types.ObjectId(id));
+    const totals = await Report.aggregate([
+      { $lookup: { from: Visit.collection.name, localField: 'visit', foreignField: '_id', as: 'v' } },
+      { $unwind: '$v' },
+      { $match: { 'v.user': { $in: authorIds } } },
+      { $group: { _id: '$v.user', n: { $sum: 1 } } },
+    ]);
+    const byAuthor = new Map(totals.map((t) => [String(t._id), t.n]));
+    res.json(reports.map((r) => ({ ...r.toObject(), authorReportCount: byAuthor.get(String(r.visit?.user?._id)) ?? 0 })));
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Admin: todas las reseñas, con búsqueda y filtros, para moderar sin depender de las denuncias
+const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const adminListVisits = async (req, res, next) => {
+  try {
+    const limit = 15;
+    const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 60) : '';
+    const match = {};
+    const min = Number(req.query.minRating);
+    const max = Number(req.query.maxRating);
+    if (min >= 1 || max <= 10) match.rating = { ...(min >= 1 && { $gte: min }), ...(max <= 10 && { $lte: max }) };
+    if (req.query.hidden === 'true') match.hidden = true;
+    if (req.query.hidden === 'false') match.hidden = { $ne: true };
+
+    const pipeline = [
+      { $match: match },
+      { $lookup: { from: User.collection.name, localField: 'user', foreignField: '_id', as: 'author' } },
+      { $lookup: { from: Stadium.collection.name, localField: 'stadium', foreignField: '_id', as: 'stadiumDoc' } },
+      { $lookup: { from: Club.collection.name, localField: 'stadiumDoc.mainClub', foreignField: '_id', as: 'clubDoc' } },
+      { $lookup: { from: Report.collection.name, localField: '_id', foreignField: 'visit', as: 'reports' } },
+      { $unwind: { path: '$author', preserveNullAndEmptyArrays: true } },
+      { $unwind: { path: '$stadiumDoc', preserveNullAndEmptyArrays: true } },
+      { $unwind: { path: '$clubDoc', preserveNullAndEmptyArrays: true } },
+    ];
+    if (q) {
+      const rx = new RegExp(escapeRegex(q), 'i');
+      pipeline.push({ $match: { $or: [{ reviewText: rx }, { 'author.username': rx }, { 'stadiumDoc.name': rx }] } });
+    }
+    pipeline.push(
+      { $sort: { createdAt: -1 } },
+      {
+        $facet: {
+          items: [
+            { $skip: (page - 1) * limit },
+            { $limit: limit },
+            {
+              $project: {
+                rating: 1, reviewText: 1, visitDate: 1, createdAt: 1, hidden: 1, hiddenReason: 1,
+                imagesCount: { $size: { $ifNull: ['$images', []] } },
+                likesCount: { $size: { $ifNull: ['$likes', []] } },
+                reportCount: { $size: '$reports' },
+                user: { _id: '$author._id', username: '$author.username', avatarUrl: '$author.avatarUrl', mutedUntil: '$author.mutedUntil' },
+                stadium: { _id: '$stadiumDoc._id', name: '$stadiumDoc.name', clubLogoUrl: '$clubDoc.logoUrl', clubName: '$clubDoc.name' },
+              },
+            },
+          ],
+          total: [{ $count: 'n' }],
+        },
+      }
+    );
+    const [result] = await Visit.aggregate(pipeline);
+    res.json({ items: result.items, total: result.total[0]?.n ?? 0, page, limit });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Admin: oculta una reseña (con motivo) o la vuelve a mostrar. No borra nada.
+export const setVisitHidden = async (req, res, next) => {
+  try {
+    const hidden = req.body?.hidden === true;
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (hidden && (reason.length < 5 || reason.length > 300)) {
+      return res.status(400).json({ message: 'El motivo debe tener entre 5 y 300 caracteres' });
+    }
+    const visit = await Visit.findByIdAndUpdate(req.params.id, { hidden, hiddenReason: hidden ? reason : '' }, { new: true });
+    if (!visit) return res.status(404).json({ message: 'Visita no encontrada' });
+    logAudit(req.user, { action: 'update', entity: 'visit', entityId: visit._id, summary: hidden ? `Ocultó una reseña (motivo: ${reason})` : 'Volvió a mostrar una reseña', fields: ['hidden'] });
+    res.json({ hidden: visit.hidden });
   } catch (error) {
     next(error);
   }

@@ -17,6 +17,9 @@ const visitSchema = new mongoose.Schema(
     reviewText: { type: String, default: '', maxlength: 1000 },
     images: [{ type: String }],
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    // Moderación: una reseña oculta no se ve en estadios ni perfiles, pero se conserva y el admin puede volver a mostrarla
+    hidden: { type: Boolean, default: false },
+    hiddenReason: { type: String, default: '', maxlength: 300 },
     matchDetails: {
       homeTeam: { type: String, default: '' },
       awayTeam: { type: String, default: '' },

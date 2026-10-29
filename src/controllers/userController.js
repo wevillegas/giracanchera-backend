@@ -225,7 +225,7 @@ export const getAllUsers = async (req, res, next) => {
 
 export const adminUpdateUser = async (req, res, next) => {
   try {
-    const { nombre, username, email, rol, bio, clubHincha } = req.body;
+    const { nombre, username, email, rol, bio, clubHincha, mutedDays } = req.body;
     const updates = {};
 
     const isSuper = req.user.rol === 'superadmin';
@@ -283,6 +283,13 @@ export const adminUpdateUser = async (req, res, next) => {
     if (clubHincha !== undefined) {
       if (!(await isValidClubRef(clubHincha))) return res.status(400).json({ message: 'El club elegido no existe' });
       updates.clubHincha = clubHincha || null;
+    }
+    // Silenciar: cantidad de días desde ahora (0 levanta la sanción)
+    if (mutedDays !== undefined) {
+      const days = Number(mutedDays);
+      if (!Number.isInteger(days) || days < 0 || days > 365) return res.status(400).json({ message: 'Los días de silencio deben ser un número entre 0 y 365' });
+      if (isSelf) return res.status(400).json({ message: 'No podés silenciar tu propia cuenta' });
+      updates.mutedUntil = days === 0 ? null : new Date(Date.now() + days * 24 * 60 * 60 * 1000);
     }
 
     const user = await User.findByIdAndUpdate(req.params.id, updates, {
