@@ -14,7 +14,7 @@ const visitSchema = new mongoose.Schema(
     },
     visitDate: { type: Date, required: true },
     rating: { type: Number, min: 1, max: 10, required: true },
-    reviewText: { type: String, default: '', maxlength: 300 },
+    reviewText: { type: String, default: '', maxlength: 1000 },
     images: [{ type: String }],
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     matchDetails: {

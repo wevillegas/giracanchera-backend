@@ -22,8 +22,8 @@ test('rechaza valores fuera de rango o de lista', () => {
   assert.ok(checkFichaInput({ surface: 'cemento' }));
   assert.ok(checkFichaInput({ status: 'roto' }));
   assert.ok(checkFichaInput({ pitch: { length: 500 } }));
-  assert.ok(checkFichaInput({ history: 'x'.repeat(1001) }));
-  assert.ok(checkFichaInput({ funFacts: Array(6).fill('a') }));
+  assert.ok(checkFichaInput({ history: 'x'.repeat(3001) }));
+  assert.ok(checkFichaInput({ funFacts: Array(9).fill('a') }));
   assert.ok(checkFichaInput({ nickname: { $ne: null } }));
 });
 

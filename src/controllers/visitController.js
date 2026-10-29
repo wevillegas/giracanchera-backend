@@ -7,7 +7,7 @@ import { logAudit } from '../utils/audit.js';
 import { stadiumExists } from '../utils/refs.js';
 
 const MAX_VISIT_PHOTOS = 4;
-const MAX_REVIEW_CHARS = 300;
+const MAX_REVIEW_CHARS = 1000;
 const REVIEW_TOO_LONG = `La reseña no puede tener más de ${MAX_REVIEW_CHARS} caracteres`;
 // Paginación: ?page=N&limit=M (máximo 200). Sin limit se devuelven 200 reseñas,
 // para que un estadio o perfil con miles de reseñas no devuelva todo en un solo request.

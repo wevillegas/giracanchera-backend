@@ -5,10 +5,10 @@ export const FICHA_FIELDS = ['nickname', 'openedYear', 'surface', 'pitch', 'stat
 export const SURFACES = ['natural', 'sintetico', 'hibrido'];
 export const STATUSES = ['activo', 'en_obra', 'demolido'];
 export const MAX_PHOTOS = 4;
-// Límites pensados para que la ficha se vea pareja: historia y datos curiosos no crecen sin control
-export const MAX_HISTORY = 1000;
-export const MAX_FUN_FACTS = 5;
-export const MAX_FUN_FACT_LENGTH = 150;
+// Límites de la ficha: textos largos pero acotados
+export const MAX_HISTORY = 3000;
+export const MAX_FUN_FACTS = 8;
+export const MAX_FUN_FACT_LENGTH = 300;
 
 const isEmpty = (value) => value === undefined || value === null || value === '';
 const isIntInRange = (value, min, max) => Number.isInteger(Number(value)) && isNumberInRange(Number(value), min, max);

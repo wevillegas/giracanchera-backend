@@ -1,7 +1,7 @@
 // Lectura de datos de Wikidata y armado del borrador de un estadio. Sin red: el script le pasa las respuestas.
 
 const MAX_DISTANCE_KM = 3; // un candidato tiene que estar a esta distancia del estadio cargado para considerarlo el mismo
-const MAX_HISTORY = 1000; // igual que el límite de la ficha
+const MAX_HISTORY = 1500;
 
 const toRad = (deg) => (deg * Math.PI) / 180;
 export function distanceKm(a, b) {
