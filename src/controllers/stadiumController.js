@@ -4,7 +4,7 @@ import Visit from '../models/Visit.js';
 import User from '../models/User.js';
 import Report from '../models/Report.js';
 import Club from '../models/Club.js';
-import { logAudit } from '../utils/audit.js';
+import { logAudit, diffChanges } from '../utils/audit.js';
 import { destroyImages } from './visitController.js';
 import { importDrafts } from '../utils/wikidataImport.js';
 import { FICHA_FIELDS, checkFichaInput, syncCover, removedPhotoUrls } from '../utils/stadiumFicha.js';
@@ -44,6 +44,7 @@ function pickStadiumFields(body) {
 
 // Un estadio de la provincia no tiene club dueño; el resto puede tener mainClub o quedar sin dueño
 function ownershipFields(body) {
+  if (body.ownerType === undefined && body.mainClub === undefined) return body; // actualización parcial (ej. solo las fotos): no toca el dueño
   if (body.ownerType === 'province') return { ...body, ownerType: 'province', mainClub: null };
   return { ...body, ownerType: 'club' };
 }
@@ -121,7 +122,7 @@ export const updateStadium = async (req, res, next) => {
     // Las fotos quitadas se borran también de Cloudinary
     await destroyImages(removedPhotoUrls(previous, updates));
 
-    logAudit(req.user, { action: 'update', entity: 'stadium', entityId: stadium._id, summary: `Editó el estadio ${stadium.name}`, fields: Object.keys(updates) });
+    logAudit(req.user, { action: 'update', entity: 'stadium', entityId: stadium._id, summary: `Editó el estadio ${stadium.name}`, fields: Object.keys(updates), changes: diffChanges(previous, updates) });
 
     res.json(stadium);
   } catch (error) {

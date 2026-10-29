@@ -181,7 +181,43 @@ export const getAdminStats = async (req, res, next) => {
     const reviewerUsers = await User.find({ _id: { $in: topReviewers.map((r) => r._id) } }).select('username');
     const names = new Map(reviewerUsers.map((u) => [String(u._id), u.username]));
 
+    // Período elegible (7, 30 o 90 días) comparado con el período anterior de igual duración
+    const days = [7, 30, 90].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+    const between = (from, to) => ({ createdAt: { $gte: since(from), $lt: since(to) } });
+    const [periodVisits, prevVisits, periodUsers, prevUsers, periodByDay, topStadiumsAgg, reviewedIds, stadiumsTotalCount] = await Promise.all([
+      Visit.countDocuments(between(days, 0)),
+      Visit.countDocuments(between(days * 2, days)),
+      User.countDocuments(between(days, 0)),
+      User.countDocuments(between(days * 2, days)),
+      Visit.aggregate([
+        { $match: between(days, 0) },
+        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
+        { $sort: { _id: 1 } },
+      ]),
+      Visit.aggregate([
+        { $match: { ...between(days, 0), hidden: { $ne: true } } },
+        { $group: { _id: '$stadium', reviews: { $sum: 1 }, avg: { $avg: '$rating' } } },
+        { $sort: { reviews: -1 } },
+        { $limit: 8 },
+        { $lookup: { from: Stadium.collection.name, localField: '_id', foreignField: '_id', as: 's' } },
+        { $unwind: '$s' },
+        { $lookup: { from: Club.collection.name, localField: 's.mainClub', foreignField: '_id', as: 'c' } },
+        { $project: { reviews: 1, avg: { $round: ['$avg', 1] }, name: '$s.name', logoUrl: { $arrayElemAt: ['$c.logoUrl', 0] } } },
+      ]),
+      Visit.distinct('stadium'),
+      Stadium.countDocuments(),
+    ]);
+    const unreviewed = await Stadium.find({ _id: { $nin: reviewedIds } }).select('name').sort({ name: 1 }).limit(15);
+
     res.json({
+      period: {
+        days,
+        visits: periodVisits, visitsPrev: prevVisits,
+        newUsers: periodUsers, newUsersPrev: prevUsers,
+        byDay: periodByDay.map((r) => ({ label: r._id, count: r.count })),
+      },
+      topStadiums: topStadiumsAgg.map((s) => ({ name: s.name, reviews: s.reviews, avg: s.avg, logoUrl: s.logoUrl || '' })),
+      unreviewed: { total: stadiumsTotalCount - reviewedIds.length, sample: unreviewed.map((s) => s.name) },
       users: { total: userTotal, admins: adminTotal, new7: newUsers7, new30: newUsers30 },
       visits30,
       reports: { open: reportsOpen, resolved: reportsResolved },

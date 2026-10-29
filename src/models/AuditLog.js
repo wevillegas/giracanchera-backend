@@ -8,7 +8,8 @@ const auditLogSchema = new mongoose.Schema(
     entity: { type: String, enum: ['stadium', 'club', 'user', 'visit', 'report', 'suggestion'], required: true },
     entityId: { type: String, default: '' },
     summary: { type: String, required: true },
-    fields: { type: [String], default: [] }, // nombres de los campos modificados, sin valores
+    fields: { type: [String], default: [] }, // nombres de los campos modificados
+    changes: { type: [{ field: String, before: String, after: String, _id: false }], default: [] }, // antes y después, en texto corto
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );

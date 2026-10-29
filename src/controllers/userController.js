@@ -3,7 +3,7 @@ import User from '../models/User.js';
 import Visit from '../models/Visit.js';
 import Stadium from '../models/Stadium.js';
 import Report from '../models/Report.js';
-import { logAudit } from '../utils/audit.js';
+import { logAudit, diffChanges } from '../utils/audit.js';
 import { destroyImages } from './visitController.js';
 import { isValidClubRef, stadiumExists } from '../utils/refs.js';
 import { isObjectId } from '../utils/validation.js';
@@ -223,6 +223,38 @@ export const getAllUsers = async (req, res, next) => {
   }
 };
 
+// Admin: resumen de la actividad de un usuario para decidir si hace falta moderarlo
+export const adminUserActivity = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!isObjectId(id)) return res.status(400).json({ message: 'Usuario inválido' });
+    const user = await User.findById(id).select('username createdAt rol mutedUntil');
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+    const [visits, hidden, reportsMade, lastVisits, ratingAgg, authored] = await Promise.all([
+      Visit.countDocuments({ user: id }),
+      Visit.countDocuments({ user: id, hidden: true }),
+      Report.countDocuments({ reporter: id }),
+      Visit.find({ user: id }).sort({ createdAt: -1 }).limit(5).select('rating reviewText hidden createdAt stadium').populate('stadium', 'name'),
+      Visit.aggregate([{ $match: { user: user._id } }, { $group: { _id: null, avg: { $avg: '$rating' } } }]),
+      Visit.find({ user: id }).select('_id'),
+    ]);
+    const reportsReceived = await Report.countDocuments({ visit: { $in: authored.map((v) => v._id) } });
+
+    res.json({
+      user,
+      visits,
+      hidden,
+      reportsMade,
+      reportsReceived,
+      avgRating: ratingAgg[0] ? Number(ratingAgg[0].avg.toFixed(1)) : null,
+      lastVisits,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const adminUpdateUser = async (req, res, next) => {
   try {
     const { nombre, username, email, rol, bio, clubHincha, mutedDays } = req.body;
@@ -231,7 +263,7 @@ export const adminUpdateUser = async (req, res, next) => {
     const isSuper = req.user.rol === 'superadmin';
     const isSelf = req.params.id === req.user._id.toString();
 
-    const target = await User.findById(req.params.id).select('rol');
+    const target = await User.findById(req.params.id).select('nombre username email rol bio clubHincha mutedUntil');
     if (!target) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
@@ -303,7 +335,7 @@ export const adminUpdateUser = async (req, res, next) => {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó al usuario @${user.username}`, fields: Object.keys(updates).filter((k) => k !== '$inc') });
+    logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó al usuario @${user.username}`, fields: Object.keys(updates).filter((k) => k !== '$inc'), changes: diffChanges(target, updates) });
     res.json(user);
   } catch (error) {
     next(error);

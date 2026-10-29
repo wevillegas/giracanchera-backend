@@ -8,6 +8,7 @@ import {
   searchUsers,
   getAllUsers,
   adminUpdateUser,
+  adminUserActivity,
   adminDeleteUser,
   deleteMe,
   getMyStats,
@@ -25,6 +26,7 @@ router.delete('/me', protect, deleteMe);
 router.put('/me/password', protect, changePassword);
 router.get('/me/stats', protect, getMyStats);
 router.get('/admin/all', protect, adminOnly, getAllUsers);
+router.get('/admin/:id/activity', protect, adminOnly, adminUserActivity);
 router.put('/admin/:id', protect, adminOnly, adminUpdateUser);
 router.delete('/admin/:id', protect, adminOnly, adminDeleteUser);
 router.get('/:id', optionalProtect, getPublicProfile);

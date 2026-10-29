@@ -2,7 +2,7 @@ import { textWithin } from '../utils/validation.js';
 import Club from '../models/Club.js';
 import Stadium from '../models/Stadium.js';
 import User from '../models/User.js';
-import { logAudit } from '../utils/audit.js';
+import { logAudit, diffChanges } from '../utils/audit.js';
 import { destroyImages } from './visitController.js';
 
 export const getClubs = async (req, res, next) => {
@@ -65,6 +65,7 @@ export const updateClub = async (req, res, next) => {
     }
 
     const previous = req.file ? await Club.findById(req.params.id).select('logoUrl') : null;
+    const before = await Club.findById(req.params.id).select('name shortName location logoUrl');
     const club = await Club.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
@@ -76,7 +77,7 @@ export const updateClub = async (req, res, next) => {
     }
     if (previous?.logoUrl) await destroyImages([previous.logoUrl]);
 
-    logAudit(req.user, { action: 'update', entity: 'club', entityId: club._id, summary: `Editó el club ${club.name}`, fields: Object.keys(updates) });
+    logAudit(req.user, { action: 'update', entity: 'club', entityId: club._id, summary: `Editó el club ${club.name}`, fields: Object.keys(updates), changes: diffChanges(before, updates) });
     res.json(club);
   } catch (error) {
     next(error);
