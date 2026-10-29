@@ -5,6 +5,10 @@ export const FICHA_FIELDS = ['nickname', 'openedYear', 'surface', 'pitch', 'stat
 export const SURFACES = ['natural', 'sintetico', 'hibrido'];
 export const STATUSES = ['activo', 'en_obra', 'demolido'];
 export const MAX_PHOTOS = 4;
+// Límites pensados para que la ficha se vea pareja: historia y datos curiosos no crecen sin control
+export const MAX_HISTORY = 1000;
+export const MAX_FUN_FACTS = 5;
+export const MAX_FUN_FACT_LENGTH = 150;
 
 const isEmpty = (value) => value === undefined || value === null || value === '';
 const isIntInRange = (value, min, max) => Number.isInteger(Number(value)) && isNumberInRange(Number(value), min, max);
@@ -19,7 +23,7 @@ export function checkFichaInput(body) {
   if (!isEmpty(openedYear) && !isIntInRange(openedYear, 1800, new Date().getFullYear() + 5)) return 'El año de inauguración no es válido';
   if (surface !== undefined && surface !== '' && !SURFACES.includes(surface)) return 'La superficie no es válida';
   if (status !== undefined && status !== '' && !STATUSES.includes(status)) return 'El estado del estadio no es válido';
-  if (history !== undefined && (!isText(history) || history.length > 5000)) return 'La historia es demasiado larga (máximo 5000 caracteres)';
+  if (history !== undefined && (!isText(history) || history.length > MAX_HISTORY)) return `La historia es demasiado larga (máximo ${MAX_HISTORY} caracteres)`;
 
   if (pitch !== undefined) {
     if (!pitch || typeof pitch !== 'object' || Array.isArray(pitch)) return 'Las medidas de la cancha no son válidas';
@@ -27,7 +31,7 @@ export function checkFichaInput(body) {
     if (!isEmpty(pitch.width) && !isNumberInRange(Number(pitch.width), 30, 100)) return 'El ancho de la cancha debe estar entre 30 y 100 m';
   }
 
-  if (funFacts !== undefined && !isTextList(funFacts, 10, 300)) return 'Los datos curiosos deben ser hasta 10 textos de 300 caracteres';
+  if (funFacts !== undefined && !isTextList(funFacts, MAX_FUN_FACTS, MAX_FUN_FACT_LENGTH)) return `Los datos curiosos deben ser hasta ${MAX_FUN_FACTS} textos de ${MAX_FUN_FACT_LENGTH} caracteres`;
   if (otherUses !== undefined && !isTextList(otherUses, 10, 100)) return 'Los otros usos deben ser hasta 10 textos de 100 caracteres';
 
   if (photos !== undefined) {
