@@ -160,7 +160,7 @@ export const getPublicProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.params.id)
       .select(PUBLIC_PROFILE_FIELDS)
-      .populate('clubHincha', 'name shortName logoUrl')
+      .populate('clubHincha', 'name logoUrl')
       .populate({ path: 'following', select: 'username avatarUrl bio clubHincha', populate: CLUB_BADGE })
       .populate('wantToVisit', 'name location imageUrl');
 
@@ -214,7 +214,7 @@ export const getAllUsers = async (req, res, next) => {
   try {
     const users = await User.find()
       .select('-password -tokenVersion -savedVisits')
-      .populate('clubHincha', 'name shortName logoUrl')
+      .populate('clubHincha', 'name logoUrl')
       .sort({ createdAt: -1 });
 
     res.json(users);
@@ -329,7 +329,7 @@ export const adminUpdateUser = async (req, res, next) => {
       runValidators: true,
     })
       .select('-password')
-      .populate('clubHincha', 'name shortName');
+      .populate('clubHincha', 'name');
 
     if (!user) {
       return res.status(404).json({ message: 'Usuario no encontrado' });

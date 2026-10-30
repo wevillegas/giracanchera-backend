@@ -24,19 +24,18 @@ export const listClubs = async (req, res, next) => {
 };
 
 // Largos máximos de los datos de un club (solo los que llegan)
-function checkClubInput({ name, shortName, location }) {
+function checkClubInput({ name, location }) {
   if (name !== undefined && (!textWithin(name, 120) || !name.trim())) return 'El nombre del club no es válido';
-  if (shortName !== undefined && !textWithin(shortName, 40)) return 'El nombre corto no puede tener más de 40 caracteres';
   if (location !== undefined && !textWithin(location, 100)) return 'La ubicación del club no puede tener más de 100 caracteres';
   return null;
 }
 
 export const createClub = async (req, res, next) => {
   try {
-    const { name, shortName, location } = req.body;
+    const { name, location } = req.body;
     const inputError = checkClubInput(req.body);
     if (inputError) return res.status(400).json({ message: inputError });
-    const payload = { name, shortName, location };
+    const payload = { name, location };
 
     if (req.file) {
       payload.logoUrl = req.file.path;
@@ -52,20 +51,19 @@ export const createClub = async (req, res, next) => {
 
 export const updateClub = async (req, res, next) => {
   try {
-    const { name, shortName, location } = req.body;
+    const { name, location } = req.body;
     const inputError = checkClubInput(req.body);
     if (inputError) return res.status(400).json({ message: inputError });
     const updates = {};
 
     if (name !== undefined) updates.name = name.trim();
-    if (shortName !== undefined) updates.shortName = shortName.trim();
     if (location !== undefined) updates.location = location.trim();
     if (req.file) {
       updates.logoUrl = req.file.path;
     }
 
     const previous = req.file ? await Club.findById(req.params.id).select('logoUrl') : null;
-    const before = await Club.findById(req.params.id).select('name shortName location logoUrl');
+    const before = await Club.findById(req.params.id).select('name location logoUrl');
     const club = await Club.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,

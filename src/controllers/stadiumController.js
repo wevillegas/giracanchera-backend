@@ -51,7 +51,7 @@ function ownershipFields(body) {
 
 export const getStadiums = async (req, res, next) => {
   try {
-    const stadiums = await Stadium.find().populate('mainClub', 'name shortName logoUrl location');
+    const stadiums = await Stadium.find().populate('mainClub', 'name logoUrl location');
     res.json(stadiums);
   } catch (error) {
     next(error);
@@ -113,7 +113,7 @@ export const updateStadium = async (req, res, next) => {
     const stadium = await Stadium.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
-    }).populate('mainClub', 'name shortName logoUrl location');
+    }).populate('mainClub', 'name logoUrl location');
 
     if (!stadium) {
       return res.status(404).json({ message: 'Estadio no encontrado' });
@@ -161,7 +161,7 @@ export const getStadiumById = async (req, res, next) => {
   try {
     const stadium = await Stadium.findById(req.params.id).populate(
       'mainClub',
-      'name shortName logoUrl location'
+      'name logoUrl location'
     );
 
     if (!stadium) {
