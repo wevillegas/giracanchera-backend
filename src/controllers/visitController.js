@@ -23,8 +23,11 @@ function paginationFrom(req) {
   };
 }
 
+// Reseñas ocultas por moderación: no cuentan en listas, estadísticas ni puntajes públicos
+export const NOT_HIDDEN = { hidden: { $ne: true } };
+
 // Cuenta silenciada por un admin: no puede publicar ni editar reseñas hasta esa fecha
-function mutedError(user) {
+export function mutedError(user) {
   if (!user?.mutedUntil || user.mutedUntil <= new Date()) return null;
   return `Tu cuenta está silenciada hasta el ${user.mutedUntil.toLocaleDateString('es-AR')}: no podés publicar ni editar reseñas`;
 }
@@ -229,7 +232,9 @@ export const deleteVisit = async (req, res, next) => {
 export const getVisitsByUser = async (req, res, next) => {
   try {
     const { query: pageQuery } = paginationFrom(req);
-    const visits = await pageQuery(Visit.find({ user: req.params.userId, hidden: { $ne: true } }))
+    // El dueño ve también sus reseñas ocultas (con el motivo), para enterarse; los demás no
+    const isOwner = Boolean(req.user) && String(req.user._id) === req.params.userId;
+    const visits = await pageQuery(Visit.find({ user: req.params.userId, ...(isOwner ? {} : NOT_HIDDEN) }))
       .populate({
         path: 'stadium',
         select: 'name imageUrl location mainClub',
@@ -247,7 +252,7 @@ export const getVisitsByUser = async (req, res, next) => {
 export const getVisitsByStadium = async (req, res, next) => {
   try {
     const { query: pageQuery } = paginationFrom(req);
-    const visits = await pageQuery(Visit.find({ stadium: req.params.stadiumId, hidden: { $ne: true } }))
+    const visits = await pageQuery(Visit.find({ stadium: req.params.stadiumId, ...NOT_HIDDEN }))
       .populate('user', 'username avatarUrl')
       .sort({ visitDate: -1 });
 
@@ -261,7 +266,7 @@ export const getVisitsByStadium = async (req, res, next) => {
 export const toggleLike = async (req, res, next) => {
   try {
     const visit = await Visit.findById(req.params.id);
-    if (!visit) {
+    if (!visit || visit.hidden) {
       return res.status(404).json({ message: 'Visita no encontrada' });
     }
     if (visit.user.toString() === req.user.id) {
@@ -286,7 +291,7 @@ export const toggleLike = async (req, res, next) => {
 export const toggleSave = async (req, res, next) => {
   try {
     const visit = await Visit.findById(req.params.id);
-    if (!visit) {
+    if (!visit || visit.hidden) {
       return res.status(404).json({ message: 'Visita no encontrada' });
     }
     if (visit.user.toString() === req.user.id) {
@@ -329,7 +334,7 @@ export const getSavedVisits = async (req, res, next) => {
       ],
     });
 
-    res.json(user.savedVisits.filter(Boolean));
+    res.json(user.savedVisits.filter((visit) => visit && !visit.hidden));
   } catch (error) {
     next(error);
   }
@@ -338,7 +343,7 @@ export const getSavedVisits = async (req, res, next) => {
 // Privadas: reseñas de otros a las que el usuario logueado les dio me gusta
 export const getLikedVisits = async (req, res, next) => {
   try {
-    const visits = await populateVisitCard(Visit.find({ likes: req.user._id, hidden: { $ne: true } }).sort({ visitDate: -1 }));
+    const visits = await populateVisitCard(Visit.find({ likes: req.user._id, ...NOT_HIDDEN }).sort({ visitDate: -1 }));
     res.json(visits);
   } catch (error) {
     next(error);
@@ -353,7 +358,7 @@ export const reportVisit = async (req, res, next) => {
       return res.status(400).json({ message: 'Contá el motivo en hasta 300 caracteres' });
     }
     const visit = await Visit.findById(req.params.id);
-    if (!visit) {
+    if (!visit || visit.hidden) {
       return res.status(404).json({ message: 'Visita no encontrada' });
     }
     if (visit.user.toString() === req.user.id) {

@@ -50,7 +50,7 @@ export const getAuditActors = async (req, res, next) => {
   }
 };
 
-const csvCell = (value) => {
+export const csvCell = (value) => {
   // Evita que Excel ejecute fórmulas si un texto empieza con = + - @
   const text = String(value ?? '').replace(/^([=+\-@])/, "'$1").replace(/"/g, '""');
   return `"${text}"`;

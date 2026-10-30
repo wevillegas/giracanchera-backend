@@ -16,7 +16,7 @@ import {
   adminListVisits,
   setVisitHidden,
 } from '../controllers/visitController.js';
-import { protect, adminOnly } from '../middlewares/authMiddleware.js';
+import { protect, optionalProtect, adminOnly } from '../middlewares/authMiddleware.js';
 import { uploadVisitPhotos, uploadLimiter } from '../middlewares/uploadMiddleware.js';
 
 const router = Router();
@@ -34,7 +34,7 @@ router.patch('/reports/:id', protect, adminOnly, resolveReport);
 router.get('/admin/all', protect, adminOnly, adminListVisits);
 router.patch('/admin/:id/hidden', protect, adminOnly, setVisitHidden);
 router.delete('/admin/:id', protect, adminOnly, adminDeleteVisit);
-router.get('/user/:userId', getVisitsByUser);
+router.get('/user/:userId', optionalProtect, getVisitsByUser);
 router.get('/stadium/:stadiumId', getVisitsByStadium);
 
 export default router;

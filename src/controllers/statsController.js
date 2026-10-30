@@ -1,4 +1,7 @@
 import Visit from '../models/Visit.js';
+
+// Las reseñas ocultas por moderación no entran en ninguna cuenta
+const VISIBLE = { hidden: { $ne: true } };
 import Stadium from '../models/Stadium.js';
 import Club from '../models/Club.js';
 import User from '../models/User.js';
@@ -24,10 +27,12 @@ export const getPublicStats = async (req, res, next) => {
       Club.countDocuments(),
       User.countDocuments(),
       Visit.aggregate([
+        { $match: VISIBLE },
         { $group: { _id: '$stadium', reviews: { $sum: 1 }, avgRating: { $avg: '$rating' } } },
       ]),
       // Gasto total por visita, solo de las visitas con gastos cargados
       Visit.aggregate([
+        { $match: VISIBLE },
         {
           $project: {
             total: {
@@ -43,6 +48,7 @@ export const getPublicStats = async (req, res, next) => {
         { $match: { total: { $gt: 0 } } },
       ]),
       Visit.aggregate([
+        { $match: VISIBLE },
         { $group: { _id: null, reviews: { $sum: 1 }, avgRating: { $avg: '$rating' } } },
       ]),
     ]);
@@ -144,7 +150,7 @@ export const getAdminStats = async (req, res, next) => {
       User.countDocuments({ rol: { $in: ['admin', 'superadmin'] } }),
       User.countDocuments({ createdAt: { $gte: since(7) } }),
       User.countDocuments({ createdAt: { $gte: since(30) } }),
-      Visit.countDocuments({ createdAt: { $gte: since(30) } }),
+      Visit.countDocuments({ createdAt: { $gte: since(30) }, ...VISIBLE }),
       Report.countDocuments({ status: 'open' }),
       Report.countDocuments({ status: 'resolved' }),
       Stadium.countDocuments(),
@@ -152,6 +158,7 @@ export const getAdminStats = async (req, res, next) => {
       Stadium.countDocuments({ mainClub: null, ownerType: { $ne: 'province' } }),
       Stadium.countDocuments({ ownerType: 'province' }),
       Visit.aggregate([
+        { $match: VISIBLE },
         { $group: { _id: '$user', reviews: { $sum: 1 } } },
         { $sort: { reviews: -1 } },
         { $limit: TOP_SIZE },
@@ -162,7 +169,7 @@ export const getAdminStats = async (req, res, next) => {
         { $sort: { _id: 1 } },
       ]),
       Visit.aggregate([
-        { $match: { createdAt: { $gte: since(30) } } },
+        { $match: { createdAt: { $gte: since(30) }, ...VISIBLE } },
         { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
         { $sort: { _id: 1 } },
       ]),
@@ -174,13 +181,14 @@ export const getAdminStats = async (req, res, next) => {
     // Período elegible (7, 30 o 90 días) comparado con el período anterior de igual duración
     const days = [7, 30, 90].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
     const between = (from, to) => ({ createdAt: { $gte: since(from), $lt: since(to) } });
+    const visibleBetween = (from, to) => ({ ...between(from, to), ...VISIBLE });
     const [periodVisits, prevVisits, periodUsers, prevUsers, periodByDay, topStadiumsAgg, reviewedIds, stadiumsTotalCount] = await Promise.all([
-      Visit.countDocuments(between(days, 0)),
-      Visit.countDocuments(between(days * 2, days)),
+      Visit.countDocuments(visibleBetween(days, 0)),
+      Visit.countDocuments(visibleBetween(days * 2, days)),
       User.countDocuments(between(days, 0)),
       User.countDocuments(between(days * 2, days)),
       Visit.aggregate([
-        { $match: between(days, 0) },
+        { $match: visibleBetween(days, 0) },
         { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
         { $sort: { _id: 1 } },
       ]),
@@ -194,7 +202,7 @@ export const getAdminStats = async (req, res, next) => {
         { $lookup: { from: Club.collection.name, localField: 's.mainClub', foreignField: '_id', as: 'c' } },
         { $project: { reviews: 1, avg: { $round: ['$avg', 1] }, name: '$s.name', logoUrl: { $arrayElemAt: ['$c.logoUrl', 0] } } },
       ]),
-      Visit.distinct('stadium'),
+      Visit.distinct('stadium', VISIBLE),
       Stadium.countDocuments(),
     ]);
     const unreviewed = await Stadium.find({ _id: { $nin: reviewedIds } }).select('name').sort({ name: 1 }).limit(15);

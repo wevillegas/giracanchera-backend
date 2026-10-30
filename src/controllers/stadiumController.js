@@ -168,7 +168,7 @@ export const getStadiumById = async (req, res, next) => {
       return res.status(404).json({ message: 'Estadio no encontrado' });
     }
 
-    const visits = await Visit.find({ stadium: stadium._id })
+    const visits = await Visit.find({ stadium: stadium._id, hidden: { $ne: true } })
       .populate('user', 'username avatarUrl')
       .sort({ visitDate: -1 })
       .limit(200);
