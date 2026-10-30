@@ -5,6 +5,7 @@ import User from '../models/User.js';
 import Report from '../models/Report.js';
 
 const TOP_SIZE = 5;
+const RANKING_SIZE = 30; // tope de filas de cada ranking público; el front las muestra de a pocas, con paginación
 const MIN_REVIEWS_FOR_RANKING = 3;
 
 // La mediana no se deja arrastrar por valores extremos (el promedio sí)
@@ -73,22 +74,11 @@ export const getPublicStats = async (req, res, next) => {
       })
       .filter(Boolean);
 
-    const topReviewed = [...rows].sort((a, b) => b.reviews - a.reviews).slice(0, TOP_SIZE);
+    const topReviewed = [...rows].sort((a, b) => b.reviews - a.reviews).slice(0, RANKING_SIZE);
     const topRated = rows
       .filter((r) => r.reviews >= MIN_REVIEWS_FOR_RANKING)
       .sort((a, b) => b.avgRating - a.avgRating || b.reviews - a.reviews)
-      .slice(0, TOP_SIZE);
-
-    // Clubes: suma de reseñas de los estadios que tienen como club dueño
-    const clubsMap = new Map();
-    for (const r of rows) {
-      if (!r.mainClubId) continue;
-      const current = clubsMap.get(r.mainClubId) || { name: r.clubName, logoUrl: r.clubLogoUrl, reviews: 0, stadiums: 0 };
-      current.reviews += r.reviews;
-      current.stadiums += 1;
-      clubsMap.set(r.mainClubId, current);
-    }
-    const topClubs = [...clubsMap.values()].sort((a, b) => b.reviews - a.reviews).slice(0, TOP_SIZE);
+      .slice(0, RANKING_SIZE);
 
     // Por provincia (o ciudad, si no tiene provincia)
     const provinceMap = new Map();
@@ -130,7 +120,7 @@ export const getPublicStats = async (req, res, next) => {
       avgExpense: median(expenseAvg.map((e) => e.total)),
     };
 
-    res.json({ totals, topReviewed, topRated, topClubs, byPlace, clubFans });
+    res.json({ totals, topReviewed, topRated, byPlace, clubFans });
   } catch (error) {
     next(error);
   }
