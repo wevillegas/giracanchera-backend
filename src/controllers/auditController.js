@@ -1,4 +1,5 @@
-import AuditLog from '../models/AuditLog.js';
+import prisma from '../config/prisma.js';
+import { auditJson } from '../db/serialize.js';
 
 const PAGE_SIZE = 20;
 const EXPORT_LIMIT = 5000;
@@ -7,15 +8,15 @@ const ACTIONS = ['create', 'update', 'delete', 'resolve'];
 const DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
 
 // Arma el filtro solo con valores validados (listas fijas, fechas AAAA-MM-DD, texto como cadena) para no pasar
-// objetos de la query directo a Mongo.
+// objetos de la query directo a la base.
 function filterFrom(query) {
   const filter = {};
   if (ENTITIES.includes(query.entity)) filter.entity = query.entity;
   if (ACTIONS.includes(query.action)) filter.action = query.action;
   if (typeof query.actor === 'string' && query.actor.trim()) filter.actorUsername = query.actor.trim().slice(0, 40);
   const createdAt = {};
-  if (DATE_RX.test(query.from)) createdAt.$gte = new Date(`${query.from}T00:00:00.000-03:00`);
-  if (DATE_RX.test(query.to)) createdAt.$lte = new Date(`${query.to}T23:59:59.999-03:00`);
+  if (DATE_RX.test(query.from)) createdAt.gte = new Date(`${query.from}T00:00:00.000-03:00`);
+  if (DATE_RX.test(query.to)) createdAt.lte = new Date(`${query.to}T23:59:59.999-03:00`);
   if (Object.keys(createdAt).length) filter.createdAt = createdAt;
   return filter;
 }
@@ -27,14 +28,11 @@ export const getAuditLogs = async (req, res, next) => {
     const filter = filterFrom(req.query);
 
     const [logs, total] = await Promise.all([
-      AuditLog.find(filter)
-        .sort({ createdAt: -1 })
-        .skip((page - 1) * PAGE_SIZE)
-        .limit(PAGE_SIZE),
-      AuditLog.countDocuments(filter),
+      prisma.auditLog.findMany({ where: filter, orderBy: { createdAt: 'desc' }, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE }),
+      prisma.auditLog.count({ where: filter }),
     ]);
 
-    res.json({ logs, total, pageSize: PAGE_SIZE });
+    res.json({ logs: logs.map(auditJson), total, pageSize: PAGE_SIZE });
   } catch (error) {
     next(error);
   }
@@ -43,8 +41,8 @@ export const getAuditLogs = async (req, res, next) => {
 // Quiénes hicieron cambios, para el filtro por administrador
 export const getAuditActors = async (req, res, next) => {
   try {
-    const actors = await AuditLog.distinct('actorUsername');
-    res.json(actors.filter(Boolean).sort((a, b) => a.localeCompare(b, 'es')));
+    const rows = await prisma.auditLog.findMany({ distinct: ['actorUsername'], select: { actorUsername: true } });
+    res.json(rows.map((r) => r.actorUsername).filter(Boolean).sort((a, b) => a.localeCompare(b, 'es')));
   } catch (error) {
     next(error);
   }
@@ -59,7 +57,7 @@ export const csvCell = (value) => {
 // CSV con los mismos filtros que la lista (hasta EXPORT_LIMIT filas)
 export const exportAuditLogs = async (req, res, next) => {
   try {
-    const logs = await AuditLog.find(filterFrom(req.query)).sort({ createdAt: -1 }).limit(EXPORT_LIMIT);
+    const logs = await prisma.auditLog.findMany({ where: filterFrom(req.query), orderBy: { createdAt: 'desc' }, take: EXPORT_LIMIT });
     const header = ['Fecha', 'Administrador', 'Acción', 'Entidad', 'Resumen', 'Campos', 'Cambios'];
     const rows = logs.map((log) => [
       log.createdAt.toISOString(),

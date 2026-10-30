@@ -1,11 +1,13 @@
-import AuditLog from '../models/AuditLog.js';
+import prisma from '../config/prisma.js';
+
+// Los registros de auditoría se borran solos a los 180 días (en Mongo lo hacía un índice TTL)
+export const AUDIT_RETENTION_DAYS = 180;
 
 // Registra un cambio en el panel de auditoría. No se espera el guardado ni se frena la operación
 // original si falla: un error de auditoría solo se loguea en consola.
-// ponytail: guarda nombres de campos, no valores antes/después; agregar 'changes' si hace falta ver el detalle.
 export function logAudit(actor, { action, entity, entityId = '', summary, fields = [], changes = [] }) {
-  AuditLog.create({
-    actor: actor?._id,
+  const data = {
+    actorId: actor?._id ?? actor?.id ?? null,
     actorUsername: actor?.username ?? '',
     action,
     entity,
@@ -13,7 +15,18 @@ export function logAudit(actor, { action, entity, entityId = '', summary, fields
     summary,
     fields,
     changes,
-  }).catch((error) => console.error('No se pudo guardar la auditoría:', error.message));
+  };
+  prisma.auditLog.create({ data })
+    // El autor ya no existe (ej.: borró su propia cuenta): queda registrado por su nombre, sin el vínculo
+    .catch((error) => (error.code === 'P2003' ? prisma.auditLog.create({ data: { ...data, actorId: null } }) : Promise.reject(error)))
+    .catch((error) => console.error('No se pudo guardar la auditoría:', error.message));
+}
+
+// Borra lo que tenga más de AUDIT_RETENTION_DAYS días. Corre al iniciar el servidor y una vez por día.
+export async function purgeOldAuditLogs() {
+  const limit = new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const { count } = await prisma.auditLog.deleteMany({ where: { createdAt: { lt: limit } } });
+  return count;
 }
 
 // Antes y después de los campos que cambian en una edición (texto corto, sin contraseñas ni datos pesados).
@@ -24,7 +37,7 @@ const shortText = (value) => {
   return text.length > 120 ? `${text.slice(0, 120)}…` : text;
 };
 export function diffChanges(before, updates) {
-  const plain = before?.toObject ? before.toObject() : before || {};
+  const plain = before || {};
   return Object.entries(updates || {})
     .filter(([field]) => !SKIP_FIELDS.includes(field))
     .map(([field, after]) => ({ field, before: shortText(plain[field]), after: shortText(after) }))

@@ -3,16 +3,21 @@ import {
 } from '../utils/validation.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import User from '../models/User.js';
+import prisma from '../config/prisma.js';
 import { logAudit } from '../utils/audit.js';
 import { COOKIE_NAME } from '../middlewares/authMiddleware.js';
 import { isValidClubRef } from '../utils/refs.js';
+import { normalizeLogin, hashPassword } from './userController.js';
+import {
+  accountJson, clubBadge, clubBadgeSelect, clubJson, userCard, userCardSelect, locationOf,
+  followingIdsSelect, wishlistIdsSelect, savedIdsSelect, followingIds, wishlistIds, savedIds,
+} from '../db/serialize.js';
 
 // Hash de relleno: login compara siempre, exista o no el usuario, para que el tiempo no delate cuentas
 const DUMMY_HASH = bcrypt.hashSync('relleno', 10);
 
 const generateToken = (user) => {
-  return jwt.sign({ id: user._id, v: user.tokenVersion ?? 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ id: user.id, v: user.tokenVersion ?? 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
 };
 
 const cookieOptions = {
@@ -27,6 +32,12 @@ const startSession = (res, user) => {
   res.cookie(COOKIE_NAME, generateToken(user), { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
 };
 
+// Lo que se devuelve al registrarse o iniciar sesión: la cuenta con su club y sus listas como ids
+const sessionInclude = { clubHincha: { select: clubBadgeSelect }, ...followingIdsSelect, ...wishlistIdsSelect, ...savedIdsSelect };
+const sessionAccount = (user) => accountJson(user, {
+  clubHincha: clubBadge(user.clubHincha), following: followingIds(user), wantToVisit: wishlistIds(user), savedVisits: savedIds(user),
+});
+
 export const register = async (req, res, next) => {
   try {
     const { nombre, username, email, password, fechaNacimiento, clubHincha } = req.body;
@@ -34,7 +45,7 @@ export const register = async (req, res, next) => {
     if (!username || !email || !password) {
       return res.status(400).json({ message: 'Faltan campos obligatorios' });
     }
-    // Solo texto: un objeto en email o username permitiría inyectar operadores de Mongo
+    // Solo texto: un objeto en email o username no es un dato válido
     const textFields = [username, email, password, nombre, clubHincha].filter((v) => v !== undefined);
     if (!textFields.every(isText)) {
       return res.status(400).json({ message: 'Datos inválidos' });
@@ -59,24 +70,27 @@ export const register = async (req, res, next) => {
       return res.status(400).json({ message: 'El club elegido no existe' });
     }
 
-    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+    const login = { email: normalizeLogin(email), username: normalizeLogin(username) };
+    const existingUser = await prisma.user.findFirst({ where: { OR: [{ email: login.email }, { username: login.username }] }, select: { id: true } });
     if (existingUser) {
       return res.status(400).json({ message: 'El usuario o email ya está registrado' });
     }
 
-    const user = await User.create({
-      nombre,
-      username,
-      email,
-      password,
-      fechaNacimiento,
-      clubHincha,
+    const user = await prisma.user.create({
+      data: {
+        nombre: nombre?.trim(),
+        ...login,
+        password: await hashPassword(password),
+        fechaNacimiento: fechaNacimiento ? new Date(fechaNacimiento) : null,
+        clubHinchaId: clubHincha || null,
+      },
+      omit: { password: true },
+      include: sessionInclude,
     });
-    await user.populate('clubHincha', 'name logoUrl');
 
-    logAudit(user, { action: 'create', entity: 'user', entityId: user._id, summary: `Se registró @${user.username}` });
+    logAudit(user, { action: 'create', entity: 'user', entityId: user.id, summary: `Se registró @${user.username}` });
     startSession(res, user);
-    res.status(201).json({ user });
+    res.status(201).json({ user: sessionAccount(user) });
   } catch (error) {
     next(error);
   }
@@ -93,15 +107,15 @@ export const login = async (req, res, next) => {
       return res.status(400).json({ message: 'Datos inválidos' });
     }
 
-    const user = await User.findOne(email ? { email } : { username });
-    const passwordOk = user ? await user.comparePassword(password) : await bcrypt.compare(password, DUMMY_HASH).then(() => false);
+    const where = email ? { email: normalizeLogin(email) } : { username: normalizeLogin(username) };
+    const user = await prisma.user.findUnique({ where, include: sessionInclude });
+    const passwordOk = user ? await bcrypt.compare(password, user.password) : await bcrypt.compare(password, DUMMY_HASH).then(() => false);
     if (!passwordOk) {
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
-    await user.populate('clubHincha', 'name logoUrl');
 
     startSession(res, user);
-    res.json({ user });
+    res.json({ user: sessionAccount(user) });
   } catch (error) {
     next(error);
   }
@@ -109,12 +123,23 @@ export const login = async (req, res, next) => {
 
 export const getMe = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user._id)
-      .populate('clubHincha')
-      .populate('following', 'username avatarUrl')
-      .populate('wantToVisit', 'name location');
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      omit: { password: true },
+      include: {
+        clubHincha: true,
+        following: { orderBy: { createdAt: 'asc' }, select: { followed: { select: userCardSelect } } },
+        wishlist: { orderBy: { createdAt: 'asc' }, select: { stadium: { select: { id: true, name: true, city: true, province: true, country: true, lat: true, lng: true } } } },
+        ...savedIdsSelect,
+      },
+    });
 
-    res.json(user);
+    res.json(accountJson(user, {
+      clubHincha: clubJson(user.clubHincha),
+      following: user.following.map((f) => userCard(f.followed)),
+      wantToVisit: user.wishlist.map(({ stadium }) => ({ _id: stadium.id, name: stadium.name, location: locationOf(stadium) })),
+      savedVisits: savedIds(user),
+    }));
   } catch (error) {
     next(error);
   }
@@ -122,7 +147,7 @@ export const getMe = async (req, res, next) => {
 
 export const logout = async (req, res, next) => {
   try {
-    await User.updateOne({ _id: req.user._id }, { $inc: { tokenVersion: 1 } });
+    await prisma.user.update({ where: { id: req.user.id }, data: { tokenVersion: { increment: 1 } } });
     res.clearCookie(COOKIE_NAME, cookieOptions);
     res.json({ message: 'Sesión cerrada' });
   } catch (error) {

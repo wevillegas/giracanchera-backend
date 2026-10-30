@@ -27,12 +27,12 @@ export function checkSuggestion({ field, value, note }) {
   return checkFichaInput(FICHA_BODY[field](value.trim()));
 }
 
-// Cambio de MongoDB que aplica la sugerencia al estadio; null si hay que corregirlo a mano
+// Columnas del estadio que cambia la sugerencia al aprobarse; null si hay que corregirlo a mano
 export function suggestionUpdate({ field, value }) {
   const text = value.trim();
   if (field === 'other') return null;
-  if (field === 'pitchLength') return { 'pitch.length': Number(text) };
-  if (field === 'pitchWidth') return { 'pitch.width': Number(text) };
+  if (field === 'pitchLength') return { pitchLength: Number(text) };
+  if (field === 'pitchWidth') return { pitchWidth: Number(text) };
   if (field === 'openedYear' || field === 'capacity') return { [field]: Number(text) };
   return { [field]: text };
 }

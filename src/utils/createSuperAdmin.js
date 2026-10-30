@@ -2,7 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config({ quiet: true });
 
 import connectDB from '../config/db.js';
-import User from '../models/User.js';
+import prisma from '../config/prisma.js';
+import { hashPassword, normalizeLogin } from '../controllers/userController.js';
 
 // Crea el superadministrador, o le asigna el rol si el usuario ya existe. No borra nada.
 // Uso (variables de entorno, así la contraseña no queda en el código):
@@ -16,19 +17,16 @@ const run = async () => {
     }
     await connectDB();
 
-    const existing = await User.findOne({ $or: [{ email: SUPERADMIN_EMAIL }, { username: SUPERADMIN_USERNAME }] });
+    const email = normalizeLogin(SUPERADMIN_EMAIL);
+    const username = normalizeLogin(SUPERADMIN_USERNAME);
+    const existing = await prisma.user.findFirst({ where: { OR: [{ email }, { username }] } });
     if (existing) {
-      existing.rol = 'superadmin';
-      await existing.save();
+      await prisma.user.update({ where: { id: existing.id }, data: { rol: 'superadmin' } });
       console.log(`@${existing.username} ahora es superadmin.`);
     } else {
       if (!SUPERADMIN_PASSWORD) throw new Error('Falta SUPERADMIN_PASSWORD para crear el usuario');
-      const user = await User.create({
-        nombre: SUPERADMIN_NOMBRE,
-        username: SUPERADMIN_USERNAME,
-        email: SUPERADMIN_EMAIL,
-        password: SUPERADMIN_PASSWORD,
-        rol: 'superadmin',
+      const user = await prisma.user.create({
+        data: { nombre: SUPERADMIN_NOMBRE, username, email, password: await hashPassword(SUPERADMIN_PASSWORD), rol: 'superadmin' },
       });
       console.log(`Superadmin creado: @${user.username}`);
     }

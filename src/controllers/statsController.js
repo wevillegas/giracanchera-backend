@@ -1,11 +1,8 @@
-import Visit from '../models/Visit.js';
+import prisma from '../config/prisma.js';
+import { byText } from '../db/serialize.js';
 
 // Las reseñas ocultas por moderación no entran en ninguna cuenta
-const VISIBLE = { hidden: { $ne: true } };
-import Stadium from '../models/Stadium.js';
-import Club from '../models/Club.js';
-import User from '../models/User.js';
-import Report from '../models/Report.js';
+const VISIBLE = { hidden: false };
 
 const TOP_SIZE = 5;
 const RANKING_SIZE = 30; // tope de filas de cada ranking público; el front las muestra de a pocas, con paginación
@@ -13,69 +10,63 @@ const MIN_REVIEWS_FOR_RANKING = 3;
 
 // La mediana no se deja arrastrar por valores extremos (el promedio sí)
 function median(values) {
-  if (values.length === 0) return 0;
+  if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return Math.round(sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
 }
 
+// Redondeo a 1 decimal "a la par" (8,25 → 8,2; 8,35 → 8,4), el mismo que usaba Mongo en las analíticas
+function roundHalfEven(value) {
+  const scaled = value * 10;
+  const floor = Math.floor(scaled);
+  const diff = scaled - floor;
+  const rounded = Math.abs(diff - 0.5) < 1e-9 ? (floor % 2 === 0 ? floor : floor + 1) : Math.round(scaled);
+  return rounded / 10;
+}
+
 // Estadísticas públicas de la comunidad: solo datos agregados, nada personal
 export const getPublicStats = async (req, res, next) => {
   try {
-    const [stadiumCount, clubCount, userCount, perStadium, expenseAvg, overall] = await Promise.all([
-      Stadium.countDocuments(),
-      Club.countDocuments(),
-      User.countDocuments(),
-      Visit.aggregate([
-        { $match: VISIBLE },
-        { $group: { _id: '$stadium', reviews: { $sum: 1 }, avgRating: { $avg: '$rating' } } },
-      ]),
+    const [stadiumCount, clubCount, userCount, perStadium, expenseTotals, overall] = await Promise.all([
+      prisma.stadium.count(),
+      prisma.club.count(),
+      prisma.user.count(),
+      prisma.visit.groupBy({ by: ['stadiumId'], where: VISIBLE, _count: { _all: true }, _avg: { rating: true } }),
       // Gasto total por visita, solo de las visitas con gastos cargados
-      Visit.aggregate([
-        { $match: VISIBLE },
-        {
-          $project: {
-            total: {
-              $add: [
-                { $ifNull: ['$expenses.ticket', 0] },
-                { $ifNull: ['$expenses.food', 0] },
-                { $ifNull: ['$expenses.parking', 0] },
-                { $ifNull: ['$expenses.transport', 0] },
-              ],
-            },
-          },
-        },
-        { $match: { total: { $gt: 0 } } },
-      ]),
-      Visit.aggregate([
-        { $match: VISIBLE },
-        { $group: { _id: null, reviews: { $sum: 1 }, avgRating: { $avg: '$rating' } } },
-      ]),
+      prisma.$queryRaw`
+        SELECT (expense_ticket + expense_food + expense_parking + expense_transport)::float AS total
+        FROM visits
+        WHERE hidden = false AND (expense_ticket + expense_food + expense_parking + expense_transport) > 0`,
+      prisma.visit.aggregate({ where: VISIBLE, _count: { _all: true }, _avg: { rating: true } }),
     ]);
 
-    const stadiumIds = perStadium.map((s) => s._id);
-    const stadiums = await Stadium.find({ _id: { $in: stadiumIds } })
-      .select('name location imageUrl mainClub')
-      .populate('mainClub', 'name logoUrl');
-    const byId = new Map(stadiums.map((s) => [String(s._id), s]));
+    const stadiums = await prisma.stadium.findMany({
+      where: { id: { in: perStadium.map((s) => s.stadiumId) } },
+      select: {
+        id: true, name: true, city: true, province: true, imageUrl: true, mainClubId: true,
+        mainClub: { select: { name: true, logoUrl: true } },
+      },
+    });
+    const byId = new Map(stadiums.map((s) => [s.id, s]));
 
-    // Filas por estadio con su información, descartando estadios borrados
+    // Filas por estadio con su información
     const rows = perStadium
       .map((row) => {
-        const stadium = byId.get(String(row._id));
+        const stadium = byId.get(row.stadiumId);
         if (!stadium) return null;
         return {
-          id: String(stadium._id),
+          id: stadium.id,
           name: stadium.name,
-          city: stadium.location?.city || '',
-          province: stadium.location?.province || '',
-          reviews: row.reviews,
-          avgRating: Math.round(row.avgRating * 10) / 10,
+          city: stadium.city || '',
+          province: stadium.province || '',
+          reviews: row._count._all,
+          avgRating: Math.round(row._avg.rating * 10) / 10,
           clubName: stadium.mainClub?.name || '',
           clubLogoUrl: stadium.mainClub?.logoUrl || '',
           imageUrl: stadium.imageUrl || '',
-          mainClubId: stadium.mainClub?._id ? String(stadium.mainClub._id) : null,
-          placeLabel: stadium.location?.province || stadium.location?.city || '',
+          mainClubId: stadium.mainClubId,
+          placeLabel: stadium.province || stadium.city || '',
         };
       })
       .filter(Boolean);
@@ -100,30 +91,26 @@ export const getPublicStats = async (req, res, next) => {
     // Hinchas por club: todos los clubes cargados (también los que no tienen ninguno), de más a menos
     // El club no guarda país: se toma del país de su estadio (si tiene varios, el primero)
     const [allClubs, clubStadiums, fansPerClub] = await Promise.all([
-      Club.find().select('name logoUrl'),
-      Stadium.find({ mainClub: { $ne: null } }).select('mainClub location.country'),
-      User.aggregate([
-        { $match: { clubHincha: { $ne: null } } },
-        { $group: { _id: '$clubHincha', fans: { $sum: 1 } } },
-      ]),
+      prisma.club.findMany({ select: { id: true, name: true, logoUrl: true }, orderBy: { createdAt: 'asc' } }),
+      prisma.stadium.findMany({ where: { mainClubId: { not: null } }, select: { mainClubId: true, country: true }, orderBy: { seq: 'asc' } }),
+      prisma.user.groupBy({ by: ['clubHinchaId'], where: { clubHinchaId: { not: null } }, _count: { _all: true } }),
     ]);
-    const fansById = new Map(fansPerClub.map((row) => [String(row._id), row.fans]));
+    const fansById = new Map(fansPerClub.map((row) => [row.clubHinchaId, row._count._all]));
     const countryById = new Map();
     for (const s of clubStadiums) {
-      const key = String(s.mainClub);
-      if (!countryById.has(key) && s.location?.country) countryById.set(key, s.location.country);
+      if (!countryById.has(s.mainClubId) && s.country) countryById.set(s.mainClubId, s.country);
     }
     const clubFans = allClubs
-      .map((club) => ({ id: String(club._id), name: club.name, logoUrl: club.logoUrl || '', country: countryById.get(String(club._id)) || '', fans: fansById.get(String(club._id)) || 0 }))
+      .map((club) => ({ id: club.id, name: club.name, logoUrl: club.logoUrl || '', country: countryById.get(club.id) || '', fans: fansById.get(club.id) || 0 }))
       .sort((a, b) => b.fans - a.fans || a.name.localeCompare(b.name, 'es'));
 
     const totals = {
       stadiums: stadiumCount,
       clubs: clubCount,
       users: userCount,
-      reviews: overall[0]?.reviews || 0,
-      avgRating: overall[0] ? Math.round(overall[0].avgRating * 10) / 10 : 0,
-      avgExpense: median(expenseAvg.map((e) => e.total)),
+      reviews: overall._count._all,
+      avgRating: overall._count._all ? Math.round(overall._avg.rating * 10) / 10 : 0,
+      avgExpense: median(expenseTotals.map((e) => e.total)),
     };
 
     res.json({ totals, topReviewed, topRated, byPlace, clubFans });
@@ -133,6 +120,13 @@ export const getPublicStats = async (req, res, next) => {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Cantidades por día ('YYYY-MM-DD') o por semana ISO ('YYYY-Www'), en hora UTC como lo calculaba Mongo
+const perDay = (since, until = new Date()) => prisma.$queryRaw`
+  SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS label, COUNT(*)::int AS count
+  FROM visits
+  WHERE hidden = false AND created_at >= ${since} AND created_at < ${until}
+  GROUP BY label ORDER BY label`;
 
 // Analíticas internas (solo admin): datos de operación y de actividad de los usuarios
 export const getAdminStats = async (req, res, next) => {
@@ -146,83 +140,68 @@ export const getAdminStats = async (req, res, next) => {
       stadiumTotal, stadiumNoPhoto, stadiumNoOwner, stadiumProvince,
       topReviewers, usersByWeek, visitsByDay,
     ] = await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ rol: { $in: ['admin', 'superadmin'] } }),
-      User.countDocuments({ createdAt: { $gte: since(7) } }),
-      User.countDocuments({ createdAt: { $gte: since(30) } }),
-      Visit.countDocuments({ createdAt: { $gte: since(30) }, ...VISIBLE }),
-      Report.countDocuments({ status: 'open' }),
-      Report.countDocuments({ status: 'resolved' }),
-      Stadium.countDocuments(),
-      Stadium.countDocuments({ $or: [{ imageUrl: '' }, { imageUrl: { $exists: false } }] }),
-      Stadium.countDocuments({ mainClub: null, ownerType: { $ne: 'province' } }),
-      Stadium.countDocuments({ ownerType: 'province' }),
-      Visit.aggregate([
-        { $match: VISIBLE },
-        { $group: { _id: '$user', reviews: { $sum: 1 } } },
-        { $sort: { reviews: -1 } },
-        { $limit: TOP_SIZE },
-      ]),
-      User.aggregate([
-        { $match: { createdAt: { $gte: since(56) } } },
-        { $group: { _id: { $dateToString: { format: '%G-W%V', date: '$createdAt' } }, count: { $sum: 1 } } },
-        { $sort: { _id: 1 } },
-      ]),
-      Visit.aggregate([
-        { $match: { createdAt: { $gte: since(30) }, ...VISIBLE } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
-        { $sort: { _id: 1 } },
-      ]),
+      prisma.user.count(),
+      prisma.user.count({ where: { rol: { in: ['admin', 'superadmin'] } } }),
+      prisma.user.count({ where: { createdAt: { gte: since(7) } } }),
+      prisma.user.count({ where: { createdAt: { gte: since(30) } } }),
+      prisma.visit.count({ where: { createdAt: { gte: since(30) }, ...VISIBLE } }),
+      prisma.report.count({ where: { status: 'open' } }),
+      prisma.report.count({ where: { status: 'resolved' } }),
+      prisma.stadium.count(),
+      prisma.stadium.count({ where: { imageUrl: '' } }),
+      prisma.stadium.count({ where: { mainClubId: null, ownerType: { not: 'province' } } }),
+      prisma.stadium.count({ where: { ownerType: 'province' } }),
+      prisma.visit.groupBy({ by: ['userId'], where: VISIBLE, _count: { _all: true }, orderBy: { _count: { userId: 'desc' } }, take: TOP_SIZE }),
+      prisma.$queryRaw`
+        SELECT to_char(created_at AT TIME ZONE 'UTC', 'IYYY-"W"IW') AS label, COUNT(*)::int AS count
+        FROM users WHERE created_at >= ${since(56)}
+        GROUP BY label ORDER BY label`,
+      perDay(since(30), new Date(now + DAY_MS)),
     ]);
 
-    const reviewerUsers = await User.find({ _id: { $in: topReviewers.map((r) => r._id) } }).select('username');
-    const names = new Map(reviewerUsers.map((u) => [String(u._id), u.username]));
+    const reviewerUsers = await prisma.user.findMany({ where: { id: { in: topReviewers.map((r) => r.userId) } }, select: { id: true, username: true } });
+    const names = new Map(reviewerUsers.map((u) => [u.id, u.username]));
 
     // Período elegible (7, 30 o 90 días) comparado con el período anterior de igual duración
     const days = [7, 30, 90].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
-    const between = (from, to) => ({ createdAt: { $gte: since(from), $lt: since(to) } });
-    const visibleBetween = (from, to) => ({ ...between(from, to), ...VISIBLE });
-    const [periodVisits, prevVisits, periodUsers, prevUsers, periodByDay, topStadiumsAgg, reviewedIds, stadiumsTotalCount] = await Promise.all([
-      Visit.countDocuments(visibleBetween(days, 0)),
-      Visit.countDocuments(visibleBetween(days * 2, days)),
-      User.countDocuments(between(days, 0)),
-      User.countDocuments(between(days * 2, days)),
-      Visit.aggregate([
-        { $match: visibleBetween(days, 0) },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
-        { $sort: { _id: 1 } },
-      ]),
-      Visit.aggregate([
-        { $match: { ...between(days, 0), hidden: { $ne: true } } },
-        { $group: { _id: '$stadium', reviews: { $sum: 1 }, avg: { $avg: '$rating' } } },
-        { $sort: { reviews: -1 } },
-        { $limit: 8 },
-        { $lookup: { from: Stadium.collection.name, localField: '_id', foreignField: '_id', as: 's' } },
-        { $unwind: '$s' },
-        { $lookup: { from: Club.collection.name, localField: 's.mainClub', foreignField: '_id', as: 'c' } },
-        { $project: { reviews: 1, avg: { $round: ['$avg', 1] }, name: '$s.name', logoUrl: { $arrayElemAt: ['$c.logoUrl', 0] } } },
-      ]),
-      Visit.distinct('stadium', VISIBLE),
-      Stadium.countDocuments(),
+    const between = (from, to) => ({ createdAt: { gte: since(from), lt: since(to) } });
+    const [periodVisits, prevVisits, periodUsers, prevUsers, periodByDay, topStadiumsAgg, reviewed, allStadiums] = await Promise.all([
+      prisma.visit.count({ where: { ...between(days, 0), ...VISIBLE } }),
+      prisma.visit.count({ where: { ...between(days * 2, days), ...VISIBLE } }),
+      prisma.user.count({ where: between(days, 0) }),
+      prisma.user.count({ where: between(days * 2, days) }),
+      perDay(since(days), since(0)),
+      prisma.$queryRaw`
+        SELECT s.name, COUNT(*)::int AS reviews, AVG(v.rating)::float AS avg, c.logo_url AS "logoUrl"
+        FROM visits v
+        JOIN stadiums s ON s.id = v.stadium_id
+        LEFT JOIN clubs c ON c.id = s.main_club_id
+        WHERE v.hidden = false AND v.created_at >= ${since(days)} AND v.created_at < ${since(0)}
+        GROUP BY s.id, s.name, c.logo_url
+        ORDER BY reviews DESC, s.name
+        LIMIT 8`,
+      prisma.visit.findMany({ where: VISIBLE, distinct: ['stadiumId'], select: { stadiumId: true } }),
+      prisma.stadium.findMany({ select: { id: true, name: true } }),
     ]);
-    const unreviewed = await Stadium.find({ _id: { $nin: reviewedIds } }).select('name').sort({ name: 1 }).limit(15);
+    const reviewedIds = new Set(reviewed.map((r) => r.stadiumId));
+    const unreviewed = allStadiums.filter((s) => !reviewedIds.has(s.id)).sort(byText('name'));
 
     res.json({
       period: {
         days,
         visits: periodVisits, visitsPrev: prevVisits,
         newUsers: periodUsers, newUsersPrev: prevUsers,
-        byDay: periodByDay.map((r) => ({ label: r._id, count: r.count })),
+        byDay: periodByDay.map((r) => ({ label: r.label, count: r.count })),
       },
-      topStadiums: topStadiumsAgg.map((s) => ({ name: s.name, reviews: s.reviews, avg: s.avg, logoUrl: s.logoUrl || '' })),
-      unreviewed: { total: stadiumsTotalCount - reviewedIds.length, sample: unreviewed.map((s) => s.name) },
+      topStadiums: topStadiumsAgg.map((s) => ({ name: s.name, reviews: s.reviews, avg: roundHalfEven(s.avg), logoUrl: s.logoUrl || '' })),
+      unreviewed: { total: allStadiums.length - reviewedIds.size, sample: unreviewed.slice(0, 15).map((s) => s.name) },
       users: { total: userTotal, admins: adminTotal, new7: newUsers7, new30: newUsers30 },
       visits30,
       reports: { open: reportsOpen, resolved: reportsResolved },
       stadiums: { total: stadiumTotal, noPhoto: stadiumNoPhoto, noOwner: stadiumNoOwner, province: stadiumProvince },
-      topReviewers: topReviewers.map((r) => ({ username: names.get(String(r._id)) || '—', reviews: r.reviews })),
-      usersByWeek: usersByWeek.map((r) => ({ label: r._id, count: r.count })),
-      visitsByDay: visitsByDay.map((r) => ({ label: r._id, count: r.count })),
+      topReviewers: topReviewers.map((r) => ({ username: names.get(r.userId) || '—', reviews: r._count._all })),
+      usersByWeek: usersByWeek.map((r) => ({ label: r.label, count: r.count })),
+      visitsByDay: visitsByDay.map((r) => ({ label: r.label, count: r.count })),
     });
   } catch (error) {
     next(error);

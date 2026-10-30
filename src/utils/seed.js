@@ -1,10 +1,8 @@
 import dotenv from 'dotenv';
 dotenv.config({ quiet: true });
 
-import mongoose from 'mongoose';
 import connectDB from '../config/db.js';
-import Club from '../models/Club.js';
-import Stadium from '../models/Stadium.js';
+import prisma from '../config/prisma.js';
 
 const clubsData = [
   { name: 'Club Atlético Boca Juniors', key: 'Boca', logoUrl: '' },
@@ -170,23 +168,32 @@ const stadiumsData = [
 
 const seed = async () => {
   try {
+    // Borra TODOS los clubes y estadios, y con los estadios (en cascada) sus reseñas: solo para una base de desarrollo
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Este seed borra todos los estadios y sus reseñas: no se puede correr en producción.');
+    }
     await connectDB();
 
-    await Club.deleteMany();
-    await Stadium.deleteMany();
+    await prisma.stadium.deleteMany();
+    await prisma.club.deleteMany();
 
-    const createdClubs = await Club.insertMany(clubsData.map(({ key, ...club }) => club)); // `key` solo enlaza cada estadio con su club
-    const clubMap = createdClubs.reduce((acc, club, i) => {
-      acc[clubsData[i].key] = club._id;
-      return acc;
-    }, {});
+    // `key` solo enlaza cada estadio con su club; no se guarda
+    const clubMap = {};
+    for (const { key, ...club } of clubsData) {
+      clubMap[key] = (await prisma.club.create({ data: club })).id;
+    }
 
-    const stadiumsToInsert = stadiumsData.map(({ clubKey, ...stadium }) => ({
-      ...stadium,
-      mainClub: clubMap[clubKey],
-    }));
-
-    await Stadium.insertMany(stadiumsToInsert);
+    await prisma.stadium.createMany({
+      data: stadiumsData.map(({ clubKey, location, ...stadium }) => ({
+        ...stadium,
+        city: location.city,
+        province: location.province ?? '',
+        country: location.country,
+        lat: location.coordinates.lat,
+        lng: location.coordinates.lng,
+        mainClubId: clubMap[clubKey] ?? null,
+      })),
+    });
 
     console.log('Seed completado con éxito: clubes y estadios de muestra creados.');
     process.exit(0);

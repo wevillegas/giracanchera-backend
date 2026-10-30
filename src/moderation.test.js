@@ -12,8 +12,8 @@ test('mutedError: solo bloquea mientras el silencio sigue vigente', () => {
   assert.match(mutedError({ mutedUntil: new Date(Date.now() + 86400000) }), /silenciada/);
 });
 
-test('NOT_HIDDEN deja pasar las reseñas viejas sin el campo hidden', () => {
-  assert.deepEqual(NOT_HIDDEN, { hidden: { $ne: true } });
+test('NOT_HIDDEN filtra por la columna hidden (en Postgres nunca es nula: las reseñas viejas se migran con false)', () => {
+  assert.deepEqual(NOT_HIDDEN, { hidden: false });
 });
 
 test('csvCell: escapa comillas y neutraliza fórmulas de Excel', () => {

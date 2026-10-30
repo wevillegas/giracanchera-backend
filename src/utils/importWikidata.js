@@ -3,8 +3,7 @@
 import dotenv from 'dotenv';
 dotenv.config({ quiet: true });
 
-import mongoose from 'mongoose';
-import connectDB from '../config/db.js';
+import connectDB, { disconnectDB } from '../config/db.js';
 import { importDrafts } from './wikidataImport.js';
 
 const DRY = process.argv.includes('--dry');
@@ -23,4 +22,4 @@ const { saved } = await importDrafts({
   },
 });
 console.log(DRY ? 'Simulación: no se guardó nada.' : `Borradores guardados: ${saved}`);
-await mongoose.disconnect();
+await disconnectDB();

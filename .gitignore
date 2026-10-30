@@ -1,2 +1,8 @@
 .env
 node_modules/
+
+# Cliente generado por Prisma (npx prisma generate)
+src/generated/
+# Respaldo de Mongo y grabaciones de la API: tienen datos personales, no van al repo
+migration/backup/
+migration/snapshots/

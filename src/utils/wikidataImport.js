@@ -1,6 +1,8 @@
 // Importación desde Wikidata: guarda sugerencias como borrador (wikidataDraft) para que un admin las revise.
 // Nunca toca los campos ya cargados. La usan el script de consola y el botón del panel de admin.
-import Stadium from '../models/Stadium.js';
+import prisma from '../config/prisma.js';
+import { Prisma } from '../generated/prisma/client.ts';
+import { stadiumJson } from '../db/serialize.js';
 import { buildDraft, pickCandidate, spanishWikiTitle } from './wikidata.js';
 
 const PAUSE_MS = 400; // cortesía con la API pública
@@ -36,7 +38,9 @@ async function spanishSummary(entity) {
 // Recorre los estadios sin sugerencia pendiente. `onProgress({ done, total, saved })` se llama tras cada uno;
 // `onStadium(stadium, draft | null, error | null)` permite mostrar el detalle (el script lo usa para imprimir).
 export async function importDrafts({ dry = false, onProgress, onStadium } = {}) {
-  const stadiums = (await Stadium.find().select('+wikidataDraft')).filter((s) => !s.wikidataDraft);
+  // Estadios sin sugerencia pendiente, en la forma de siempre (ubicación anidada, etc.) que esperan los helpers de Wikidata
+  const rows = await prisma.stadium.findMany({ where: { wikidataDraft: { equals: Prisma.DbNull } }, orderBy: { seq: 'asc' } });
+  const stadiums = rows.map(stadiumJson);
   let saved = 0;
   let failed = 0;
   let done = 0;
@@ -46,7 +50,7 @@ export async function importDrafts({ dry = false, onProgress, onStadium } = {}) 
       const draft = entity && buildDraft(stadium, entity, await spanishSummary(entity));
       onStadium?.(stadium, draft, null);
       if (draft && !dry) {
-        await Stadium.updateOne({ _id: stadium._id }, { wikidataDraft: draft });
+        await prisma.stadium.update({ where: { id: stadium._id }, data: { wikidataDraft: JSON.parse(JSON.stringify(draft)) } });
         saved += 1;
       }
     } catch (error) {

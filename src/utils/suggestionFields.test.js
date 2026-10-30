@@ -23,7 +23,7 @@ test('rechaza campos desconocidos, vacíos o fuera de rango', () => {
 
 test('arma el cambio para aplicar al estadio', () => {
   assert.deepEqual(suggestionUpdate({ field: 'openedYear', value: ' 1940 ' }), { openedYear: 1940 });
-  assert.deepEqual(suggestionUpdate({ field: 'pitchWidth', value: '68' }), { 'pitch.width': 68 });
+  assert.deepEqual(suggestionUpdate({ field: 'pitchWidth', value: '68' }), { pitchWidth: 68 });
   assert.deepEqual(suggestionUpdate({ field: 'nickname', value: ' Bombonera ' }), { nickname: 'Bombonera' });
   assert.equal(suggestionUpdate({ field: 'other', value: 'algo' }), null);
 });

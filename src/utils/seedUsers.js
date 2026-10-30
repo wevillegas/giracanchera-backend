@@ -2,7 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config({ quiet: true });
 
 import connectDB from '../config/db.js';
-import User from '../models/User.js';
+import prisma from '../config/prisma.js';
+import { hashPassword } from '../controllers/userController.js';
 
 const usersData = [
   { nombre: 'Admin', username: 'admin', email: 'admin@giracanchera.com', password: 'admin123', rol: 'admin' },
@@ -16,9 +17,9 @@ const seed = async () => {
     }
     await connectDB();
 
-    for (const data of usersData) {
-      await User.deleteOne({ username: data.username });
-      await User.create(data);
+    for (const { password, ...data } of usersData) {
+      await prisma.user.deleteMany({ where: { username: data.username } });
+      await prisma.user.create({ data: { ...data, password: await hashPassword(password) } });
     }
 
     console.log('Usuarios de prueba creados: admin/admin123, usuario/usuario123');

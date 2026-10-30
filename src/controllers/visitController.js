@@ -1,13 +1,11 @@
-import mongoose from 'mongoose';
-import Visit from '../models/Visit.js';
-import Stadium from '../models/Stadium.js';
-import Club from '../models/Club.js';
-import User from '../models/User.js';
+import prisma from '../config/prisma.js';
 import cloudinary from '../config/cloudinary.js';
-import { isText, isNumberInRange, safeParse, textWithin } from '../utils/validation.js';
-import Report from '../models/Report.js';
+import { isText, isNumberInRange, safeParse, isId, escapeLike } from '../utils/validation.js';
 import { logAudit } from '../utils/audit.js';
 import { stadiumExists } from '../utils/refs.js';
+import {
+  visitJson, visitBaseInclude, visitColumnsFrom, userCard, userCardSelect, stadiumCard, stadiumCardSelect,
+} from '../db/serialize.js';
 
 const MAX_VISIT_PHOTOS = 4;
 const MAX_REVIEW_CHARS = 1000;
@@ -18,13 +16,11 @@ const DEFAULT_LIMIT = 200;
 function paginationFrom(req) {
   const limit = Math.min(Number.parseInt(req.query.limit, 10) || DEFAULT_LIMIT, DEFAULT_LIMIT);
   const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
-  return {
-    query: (q) => (limit > 0 ? q.skip((page - 1) * limit).limit(limit) : q),
-  };
+  return limit > 0 ? { skip: (page - 1) * limit, take: limit } : {};
 }
 
 // Reseñas ocultas por moderación: no cuentan en listas, estadísticas ni puntajes públicos
-export const NOT_HIDDEN = { hidden: { $ne: true } };
+export const NOT_HIDDEN = { hidden: false };
 
 // Cuenta silenciada por un admin: no puede publicar ni editar reseñas hasta esa fecha
 export function mutedError(user) {
@@ -75,8 +71,8 @@ function checkVisitInput({ visitDate, rating, reviewText, matchDetails, expenses
     if (Number.isNaN(new Date(visitDate).getTime())) return bad('La fecha de la visita no es válida');
     if (isFutureDate(visitDate)) return bad('La fecha de la visita no puede ser posterior a hoy');
   }
-  if (rating !== undefined && !isNumberInRange(Number(rating), 1, 10)) {
-    return bad('La puntuación debe estar entre 1 y 10');
+  if (rating !== undefined && !(Number.isInteger(Number(rating)) && isNumberInRange(Number(rating), 1, 10))) {
+    return bad('La puntuación debe ser un número entero entre 1 y 10');
   }
   if (reviewText !== undefined) {
     if (!isText(reviewText)) return bad('La reseña debe ser texto');
@@ -116,6 +112,13 @@ function checkVisitInput({ visitDate, rating, reviewText, matchDetails, expenses
   };
 }
 
+
+// Reseña con su autor y su estadio resumido (las cards de perfil, guardadas y me gusta)
+const visitCardInclude = { ...visitBaseInclude, user: { select: userCardSelect }, stadium: { select: stadiumCardSelect } };
+const visitCard = (v) => visitJson(v, { user: userCard(v.user), stadium: stadiumCard(v.stadium) });
+
+const findVisit = (id, options = {}) => (isId(id) ? prisma.visit.findUnique({ where: { id }, ...options }) : null);
+
 export const createVisit = async (req, res, next) => {
   try {
     const muted = mutedError(req.user);
@@ -139,21 +142,24 @@ export const createVisit = async (req, res, next) => {
     if (check.error) return fail(check.error);
     if (!(await stadiumExists(stadium))) return fail('El estadio no existe');
 
-    const visit = await Visit.create({
-      user: req.user._id,
-      stadium,
-      visitDate,
-      rating,
-      reviewText,
-      images: files.map((file) => file.path),
-      matchDetails: check.match,
-      expenses: check.expenses,
+    const visit = await prisma.visit.create({
+      data: {
+        userId: req.user.id,
+        stadiumId: stadium,
+        visitDate: new Date(visitDate),
+        rating: Number(rating),
+        reviewText: reviewText ?? '',
+        ...visitColumnsFrom({ matchDetails: check.match, expenses: check.expenses }),
+        images: { create: files.map((file, position) => ({ position, url: file.path })) },
+      },
+      include: visitBaseInclude,
     });
 
-    await User.findByIdAndUpdate(req.user._id, { $pull: { wantToVisit: stadium } });
+    // Ya lo visitó: deja de estar "por visitar"
+    await prisma.wishlist.deleteMany({ where: { userId: req.user.id, stadiumId: stadium } });
 
-    logAudit(req.user, { action: 'create', entity: 'visit', entityId: visit._id, summary: 'Publicó una reseña' });
-    res.status(201).json(visit);
+    logAudit(req.user, { action: 'create', entity: 'visit', entityId: visit.id, summary: 'Publicó una reseña' });
+    res.status(201).json(visitJson(visit));
   } catch (error) {
     next(error);
   }
@@ -166,11 +172,13 @@ export const updateVisit = async (req, res, next) => {
       await destroyImages((req.files || []).map((f) => f.path));
       return res.status(403).json({ message: muted });
     }
-    const visit = await Visit.findById(req.params.id);
+    const visit = await findVisit(req.params.id, { include: { images: visitBaseInclude.images } });
     if (!visit) {
+      await destroyImages((req.files || []).map((f) => f.path));
       return res.status(404).json({ message: 'Visita no encontrada' });
     }
-    if (visit.user.toString() !== req.user.id) {
+    if (visit.userId !== req.user.id) {
+      await destroyImages((req.files || []).map((f) => f.path));
       return res.status(403).json({ message: 'No podés editar esta visita' });
     }
 
@@ -185,26 +193,30 @@ export const updateVisit = async (req, res, next) => {
     if (check.error) return fail(check.error);
 
     // Fotos que el usuario quitó en el modal de edición (solo las que realmente son de esta visita)
-    const toRemove = check.removeImages;
-    const removed = visit.images.filter((url) => toRemove.includes(url));
-    const kept = visit.images.filter((url) => !toRemove.includes(url));
+    const current = visit.images.map((image) => image.url);
+    const removed = current.filter((url) => check.removeImages.includes(url));
+    const kept = current.filter((url) => !check.removeImages.includes(url));
 
     // Las fotos nuevas se suman a las que quedan; el tope es 4 en total
     if (kept.length + newFiles.length > MAX_VISIT_PHOTOS) {
       return fail(`Una visita puede tener hasta ${MAX_VISIT_PHOTOS} fotos`);
     }
 
-    if (rating !== undefined) visit.rating = rating;
-    if (reviewText !== undefined) visit.reviewText = reviewText;
-    if (visitDate !== undefined) visit.visitDate = visitDate;
-    if (check.match !== undefined) visit.matchDetails = check.match;
-    if (check.expenses !== undefined) visit.expenses = check.expenses;
-    visit.images = [...kept, ...newFiles.map((f) => f.path)];
-
-    await visit.save();
+    const images = [...kept, ...newFiles.map((f) => f.path)];
+    const updated = await prisma.visit.update({
+      where: { id: visit.id },
+      data: {
+        ...(rating !== undefined && { rating: Number(rating) }),
+        ...(reviewText !== undefined && { reviewText }),
+        ...(visitDate !== undefined && { visitDate: new Date(visitDate) }),
+        ...visitColumnsFrom({ matchDetails: check.match, expenses: check.expenses }),
+        images: { deleteMany: {}, create: images.map((url, position) => ({ position, url })) },
+      },
+      include: visitBaseInclude,
+    });
     await destroyImages(removed);
-    logAudit(req.user, { action: 'update', entity: 'visit', entityId: visit._id, summary: 'Editó una reseña' });
-    res.json(visit);
+    logAudit(req.user, { action: 'update', entity: 'visit', entityId: updated.id, summary: 'Editó una reseña' });
+    res.json(visitJson(updated));
   } catch (error) {
     next(error);
   }
@@ -212,17 +224,18 @@ export const updateVisit = async (req, res, next) => {
 
 export const deleteVisit = async (req, res, next) => {
   try {
-    const visit = await Visit.findById(req.params.id);
+    const visit = await findVisit(req.params.id, { include: { images: visitBaseInclude.images } });
     if (!visit) {
       return res.status(404).json({ message: 'Visita no encontrada' });
     }
-    if (visit.user.toString() !== req.user.id) {
+    if (visit.userId !== req.user.id) {
       return res.status(403).json({ message: 'No podés eliminar esta visita' });
     }
 
-    await visit.deleteOne();
-    await User.updateMany({ savedVisits: visit._id }, { $pull: { savedVisits: visit._id } });
-    logAudit(req.user, { action: 'delete', entity: 'visit', entityId: visit._id, summary: 'Eliminó una reseña' });
+    // Se van con la reseña (en cascada) sus fotos, likes, guardadas y denuncias
+    await prisma.visit.delete({ where: { id: visit.id } });
+    await destroyImages(visit.images.map((image) => image.url));
+    logAudit(req.user, { action: 'delete', entity: 'visit', entityId: visit.id, summary: 'Eliminó una reseña' });
     res.json({ message: 'Visita eliminada' });
   } catch (error) {
     next(error);
@@ -231,19 +244,17 @@ export const deleteVisit = async (req, res, next) => {
 
 export const getVisitsByUser = async (req, res, next) => {
   try {
-    const { query: pageQuery } = paginationFrom(req);
+    if (!isId(req.params.userId)) return res.status(400).json({ message: 'Datos inválidos' });
     // El dueño ve también sus reseñas ocultas (con el motivo), para enterarse; los demás no
-    const isOwner = Boolean(req.user) && String(req.user._id) === req.params.userId;
-    const visits = await pageQuery(Visit.find({ user: req.params.userId, ...(isOwner ? {} : NOT_HIDDEN) }))
-      .populate({
-        path: 'stadium',
-        select: 'name imageUrl location mainClub',
-        populate: { path: 'mainClub', select: 'name logoUrl location' },
-      })
-      .populate('user', 'username avatarUrl')
-      .sort({ createdAt: -1 });
+    const isOwner = Boolean(req.user) && req.user.id === req.params.userId;
+    const visits = await prisma.visit.findMany({
+      where: { userId: req.params.userId, ...(isOwner ? {} : NOT_HIDDEN) },
+      include: visitCardInclude,
+      orderBy: [{ createdAt: 'desc' }, { seq: 'asc' }],
+      ...paginationFrom(req),
+    });
 
-    res.json(visits);
+    res.json(visits.map(visitCard));
   } catch (error) {
     next(error);
   }
@@ -251,12 +262,15 @@ export const getVisitsByUser = async (req, res, next) => {
 
 export const getVisitsByStadium = async (req, res, next) => {
   try {
-    const { query: pageQuery } = paginationFrom(req);
-    const visits = await pageQuery(Visit.find({ stadium: req.params.stadiumId, ...NOT_HIDDEN }))
-      .populate('user', 'username avatarUrl')
-      .sort({ visitDate: -1 });
+    if (!isId(req.params.stadiumId)) return res.status(400).json({ message: 'Datos inválidos' });
+    const visits = await prisma.visit.findMany({
+      where: { stadiumId: req.params.stadiumId, ...NOT_HIDDEN },
+      include: { ...visitBaseInclude, user: { select: userCardSelect } },
+      orderBy: [{ visitDate: 'desc' }, { seq: 'asc' }],
+      ...paginationFrom(req),
+    });
 
-    res.json(visits);
+    res.json(visits.map((v) => visitJson(v, { user: userCard(v.user) })));
   } catch (error) {
     next(error);
   }
@@ -265,23 +279,27 @@ export const getVisitsByStadium = async (req, res, next) => {
 // Me gusta: se puede dar a reseñas de otros usuarios; el dueño no puede darse like a sí mismo
 export const toggleLike = async (req, res, next) => {
   try {
-    const visit = await Visit.findById(req.params.id);
+    const visit = await findVisit(req.params.id, { select: { id: true, userId: true, hidden: true } });
     if (!visit || visit.hidden) {
       return res.status(404).json({ message: 'Visita no encontrada' });
     }
-    if (visit.user.toString() === req.user.id) {
+    if (visit.userId === req.user.id) {
       return res.status(400).json({ message: 'No podés darle me gusta a tu propia reseña' });
     }
 
-    // Operación atómica: dos clics rápidos no duplican ni pierden el me gusta
-    const liked = !visit.likes.some((id) => id.toString() === req.user.id);
-    const updated = await Visit.findByIdAndUpdate(
-      visit._id,
-      liked ? { $addToSet: { likes: req.user._id } } : { $pull: { likes: req.user._id } },
-      { new: true }
-    ).select('likes');
+    // Si ya estaba, se quita; si no, se agrega. Dos clics rápidos no duplican (la clave primaria lo impide)
+    const removed = await prisma.visitLike.deleteMany({ where: { visitId: visit.id, userId: req.user.id } });
+    const liked = removed.count === 0;
+    if (liked) {
+      await prisma.visitLike.upsert({
+        where: { visitId_userId: { visitId: visit.id, userId: req.user.id } },
+        create: { visitId: visit.id, userId: req.user.id },
+        update: {},
+      });
+    }
+    const likesCount = await prisma.visitLike.count({ where: { visitId: visit.id } });
 
-    res.json({ liked, likesCount: updated.likes.length });
+    res.json({ liked, likesCount });
   } catch (error) {
     next(error);
   }
@@ -290,51 +308,40 @@ export const toggleLike = async (req, res, next) => {
 // Guardar: lista privada del usuario con las reseñas que quiere volver a ver
 export const toggleSave = async (req, res, next) => {
   try {
-    const visit = await Visit.findById(req.params.id);
+    const visit = await findVisit(req.params.id, { select: { id: true, userId: true, hidden: true } });
     if (!visit || visit.hidden) {
       return res.status(404).json({ message: 'Visita no encontrada' });
     }
-    if (visit.user.toString() === req.user.id) {
+    if (visit.userId === req.user.id) {
       return res.status(400).json({ message: 'No podés guardar tu propia reseña' });
     }
 
-    const isSaved = Boolean(await User.exists({ _id: req.user._id, savedVisits: visit._id }));
-    await User.updateOne(
-      { _id: req.user._id },
-      isSaved ? { $pull: { savedVisits: visit._id } } : { $addToSet: { savedVisits: visit._id } }
-    );
+    const removed = await prisma.savedVisit.deleteMany({ where: { userId: req.user.id, visitId: visit.id } });
+    const saved = removed.count === 0;
+    if (saved) {
+      await prisma.savedVisit.upsert({
+        where: { userId_visitId: { userId: req.user.id, visitId: visit.id } },
+        create: { userId: req.user.id, visitId: visit.id },
+        update: {},
+      });
+    }
 
-    res.json({ saved: !isSaved });
+    res.json({ saved });
   } catch (error) {
     next(error);
   }
 };
 
-// Datos que necesitan las cards de reseñas guardadas o con me gusta
-const populateVisitCard = (query) => query
-  .populate({
-    path: 'stadium',
-    select: 'name imageUrl location mainClub',
-    populate: { path: 'mainClub', select: 'name logoUrl location' },
-  })
-  .populate('user', 'username avatarUrl');
-
-// Privadas: solo el usuario logueado ve sus guardadas
+// Privadas: solo el usuario logueado ve sus guardadas, en el orden en que las guardó
 export const getSavedVisits = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user._id).populate({
-      path: 'savedVisits',
-      populate: [
-        {
-          path: 'stadium',
-          select: 'name imageUrl location mainClub',
-          populate: { path: 'mainClub', select: 'name logoUrl location' },
-        },
-        { path: 'user', select: 'username avatarUrl' },
-      ],
+    const saved = await prisma.savedVisit.findMany({
+      where: { userId: req.user.id, visit: NOT_HIDDEN },
+      orderBy: { createdAt: 'asc' },
+      include: { visit: { include: visitCardInclude } },
     });
 
-    res.json(user.savedVisits.filter((visit) => visit && !visit.hidden));
+    res.json(saved.map((row) => visitCard(row.visit)));
   } catch (error) {
     next(error);
   }
@@ -343,8 +350,12 @@ export const getSavedVisits = async (req, res, next) => {
 // Privadas: reseñas de otros a las que el usuario logueado les dio me gusta
 export const getLikedVisits = async (req, res, next) => {
   try {
-    const visits = await populateVisitCard(Visit.find({ likes: req.user._id, ...NOT_HIDDEN }).sort({ visitDate: -1 }));
-    res.json(visits);
+    const visits = await prisma.visit.findMany({
+      where: { likes: { some: { userId: req.user.id } }, ...NOT_HIDDEN },
+      include: visitCardInclude,
+      orderBy: [{ visitDate: 'desc' }, { seq: 'asc' }],
+    });
+    res.json(visits.map(visitCard));
   } catch (error) {
     next(error);
   }
@@ -357,18 +368,18 @@ export const reportVisit = async (req, res, next) => {
     if (!isText(reason) || !reason.trim() || reason.length > 300) {
       return res.status(400).json({ message: 'Contá el motivo en hasta 300 caracteres' });
     }
-    const visit = await Visit.findById(req.params.id);
+    const visit = await findVisit(req.params.id, { select: { id: true, userId: true, hidden: true } });
     if (!visit || visit.hidden) {
       return res.status(404).json({ message: 'Visita no encontrada' });
     }
-    if (visit.user.toString() === req.user.id) {
+    if (visit.userId === req.user.id) {
       return res.status(400).json({ message: 'No podés denunciar tu propia reseña' });
     }
 
     try {
-      await Report.create({ visit: visit._id, reporter: req.user._id, reason });
+      await prisma.report.create({ data: { visitId: visit.id, reporterId: req.user.id, reason } });
     } catch (error) {
-      if (error.code === 11000) {
+      if (error.code === 'P2002') {
         return res.status(400).json({ message: 'Ya denunciaste esta reseña' });
       }
       throw error;
@@ -382,84 +393,105 @@ export const reportVisit = async (req, res, next) => {
 // Admin: denuncias abiertas con la reseña y los usuarios involucrados
 export const getReports = async (req, res, next) => {
   try {
-    const reports = await Report.find({ status: 'open' })
-      .sort({ createdAt: -1 })
-      .populate('reporter', 'username')
-      .populate({
-        path: 'visit',
-        select: 'reviewText rating visitDate user stadium',
-        populate: [
-          { path: 'user', select: 'username' },
-          { path: 'stadium', select: 'name mainClub', populate: { path: 'mainClub', select: 'name logoUrl' } },
-        ],
-      });
+    const reports = await prisma.report.findMany({
+      where: { status: 'open' },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        reporter: { select: { id: true, username: true } },
+        visit: {
+          select: {
+            id: true, reviewText: true, rating: true, visitDate: true,
+            user: { select: { id: true, username: true } },
+            stadium: { select: { id: true, name: true, mainClub: { select: { id: true, name: true, logoUrl: true } } } },
+          },
+        },
+      },
+    });
     // Reincidencia: cuántas denuncias (abiertas o ya resueltas) tienen en total las reseñas de cada autor
-    const authorIds = [...new Set(reports.map((r) => r.visit?.user?._id).filter(Boolean).map(String))].map((id) => new mongoose.Types.ObjectId(id));
-    const totals = await Report.aggregate([
-      { $lookup: { from: Visit.collection.name, localField: 'visit', foreignField: '_id', as: 'v' } },
-      { $unwind: '$v' },
-      { $match: { 'v.user': { $in: authorIds } } },
-      { $group: { _id: '$v.user', n: { $sum: 1 } } },
-    ]);
-    const byAuthor = new Map(totals.map((t) => [String(t._id), t.n]));
-    res.json(reports.map((r) => ({ ...r.toObject(), authorReportCount: byAuthor.get(String(r.visit?.user?._id)) ?? 0 })));
+    const authorIds = [...new Set(reports.map((r) => r.visit?.user?.id).filter(Boolean))];
+    const totals = authorIds.length
+      ? await prisma.$queryRaw`
+          SELECT v.user_id::text AS author, COUNT(*)::int AS n
+          FROM reports r JOIN visits v ON v.id = r.visit_id
+          WHERE v.user_id = ANY(${authorIds}::uuid[])
+          GROUP BY v.user_id`
+      : [];
+    const byAuthor = new Map(totals.map((t) => [t.author, t.n]));
+
+    const club = (c) => c && { _id: c.id, name: c.name, logoUrl: c.logoUrl };
+    res.json(reports.map((r) => ({
+      _id: r.id,
+      visit: r.visit && {
+        _id: r.visit.id,
+        reviewText: r.visit.reviewText,
+        rating: r.visit.rating,
+        visitDate: r.visit.visitDate,
+        user: r.visit.user && { _id: r.visit.user.id, username: r.visit.user.username },
+        stadium: r.visit.stadium && { _id: r.visit.stadium.id, name: r.visit.stadium.name, mainClub: club(r.visit.stadium.mainClub) },
+      },
+      reporter: r.reporter && { _id: r.reporter.id, username: r.reporter.username },
+      reason: r.reason,
+      status: r.status,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      authorReportCount: byAuthor.get(r.visit?.user?.id) ?? 0,
+    })));
   } catch (error) {
     next(error);
   }
 };
 
 // Admin: todas las reseñas, con búsqueda y filtros, para moderar sin depender de las denuncias
-const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export const adminListVisits = async (req, res, next) => {
   try {
     const limit = 15;
     const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
     const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 60) : '';
-    const match = {};
+    const where = {};
     const min = Number(req.query.minRating);
     const max = Number(req.query.maxRating);
-    if (min >= 1 || max <= 10) match.rating = { ...(min >= 1 && { $gte: min }), ...(max <= 10 && { $lte: max }) };
-    if (req.query.hidden === 'true') match.hidden = true;
-    if (req.query.hidden === 'false') match.hidden = { $ne: true };
-
-    const pipeline = [
-      { $match: match },
-      { $lookup: { from: User.collection.name, localField: 'user', foreignField: '_id', as: 'author' } },
-      { $lookup: { from: Stadium.collection.name, localField: 'stadium', foreignField: '_id', as: 'stadiumDoc' } },
-      { $lookup: { from: Club.collection.name, localField: 'stadiumDoc.mainClub', foreignField: '_id', as: 'clubDoc' } },
-      { $lookup: { from: Report.collection.name, localField: '_id', foreignField: 'visit', as: 'reports' } },
-      { $unwind: { path: '$author', preserveNullAndEmptyArrays: true } },
-      { $unwind: { path: '$stadiumDoc', preserveNullAndEmptyArrays: true } },
-      { $unwind: { path: '$clubDoc', preserveNullAndEmptyArrays: true } },
-    ];
+    if (min >= 1 || max <= 10) where.rating = { ...(min >= 1 && { gte: min }), ...(max <= 10 && { lte: max }) };
+    if (req.query.hidden === 'true') where.hidden = true;
+    if (req.query.hidden === 'false') where.hidden = false;
     if (q) {
-      const rx = new RegExp(escapeRegex(q), 'i');
-      pipeline.push({ $match: { $or: [{ reviewText: rx }, { 'author.username': rx }, { 'stadiumDoc.name': rx }] } });
+      const text = { contains: escapeLike(q), mode: 'insensitive' };
+      where.OR = [{ reviewText: text }, { user: { username: text } }, { stadium: { name: text } }];
     }
-    pipeline.push(
-      { $sort: { createdAt: -1 } },
-      {
-        $facet: {
-          items: [
-            { $skip: (page - 1) * limit },
-            { $limit: limit },
-            {
-              $project: {
-                rating: 1, reviewText: 1, visitDate: 1, createdAt: 1, hidden: 1, hiddenReason: 1,
-                imagesCount: { $size: { $ifNull: ['$images', []] } },
-                likesCount: { $size: { $ifNull: ['$likes', []] } },
-                reportCount: { $size: '$reports' },
-                user: { _id: '$author._id', username: '$author.username', avatarUrl: '$author.avatarUrl', mutedUntil: '$author.mutedUntil' },
-                stadium: { _id: '$stadiumDoc._id', name: '$stadiumDoc.name', clubLogoUrl: '$clubDoc.logoUrl', clubName: '$clubDoc.name' },
-              },
-            },
-          ],
-          total: [{ $count: 'n' }],
+
+    const [items, total] = await Promise.all([
+      prisma.visit.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { seq: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true, rating: true, reviewText: true, visitDate: true, createdAt: true, hidden: true, hiddenReason: true,
+          _count: { select: { images: true, likes: true, reports: true } },
+          user: { select: { id: true, username: true, avatarUrl: true, mutedUntil: true } },
+          stadium: { select: { id: true, name: true, mainClub: { select: { name: true, logoUrl: true } } } },
         },
-      }
-    );
-    const [result] = await Visit.aggregate(pipeline);
-    res.json({ items: result.items, total: result.total[0]?.n ?? 0, page, limit });
+      }),
+      prisma.visit.count({ where }),
+    ]);
+    res.json({
+      items: items.map((v) => ({
+        _id: v.id,
+        rating: v.rating,
+        reviewText: v.reviewText,
+        visitDate: v.visitDate,
+        createdAt: v.createdAt,
+        hidden: v.hidden,
+        hiddenReason: v.hiddenReason,
+        imagesCount: v._count.images,
+        likesCount: v._count.likes,
+        reportCount: v._count.reports,
+        user: { _id: v.user.id, username: v.user.username, avatarUrl: v.user.avatarUrl, mutedUntil: v.user.mutedUntil },
+        stadium: { _id: v.stadium.id, name: v.stadium.name, clubLogoUrl: v.stadium.mainClub?.logoUrl, clubName: v.stadium.mainClub?.name },
+      })),
+      total,
+      page,
+      limit,
+    });
   } catch (error) {
     next(error);
   }
@@ -473,9 +505,10 @@ export const setVisitHidden = async (req, res, next) => {
     if (hidden && (reason.length < 5 || reason.length > 300)) {
       return res.status(400).json({ message: 'El motivo debe tener entre 5 y 300 caracteres' });
     }
-    const visit = await Visit.findByIdAndUpdate(req.params.id, { hidden, hiddenReason: hidden ? reason : '' }, { new: true });
-    if (!visit) return res.status(404).json({ message: 'Visita no encontrada' });
-    logAudit(req.user, { action: 'update', entity: 'visit', entityId: visit._id, summary: hidden ? `Ocultó una reseña (motivo: ${reason})` : 'Volvió a mostrar una reseña', fields: ['hidden'] });
+    const found = await findVisit(req.params.id, { select: { id: true } });
+    if (!found) return res.status(404).json({ message: 'Visita no encontrada' });
+    const visit = await prisma.visit.update({ where: { id: found.id }, data: { hidden, hiddenReason: hidden ? reason : '' } });
+    logAudit(req.user, { action: 'update', entity: 'visit', entityId: visit.id, summary: hidden ? `Ocultó una reseña (motivo: ${reason})` : 'Volvió a mostrar una reseña', fields: ['hidden'] });
     res.json({ hidden: visit.hidden });
   } catch (error) {
     next(error);
@@ -485,23 +518,22 @@ export const setVisitHidden = async (req, res, next) => {
 // Admin (y superadmin): borra cualquier reseña directamente, con motivo obligatorio (queda en la auditoría)
 export const adminDeleteVisit = async (req, res, next) => {
   try {
-    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
     if (reason.length < 5 || reason.length > 300) {
-      return res.status(400).json({ message: "El motivo debe tener entre 5 y 300 caracteres" });
+      return res.status(400).json({ message: 'El motivo debe tener entre 5 y 300 caracteres' });
     }
 
-    const visit = await Visit.findById(req.params.id);
+    const visit = await findVisit(req.params.id, { include: { images: visitBaseInclude.images } });
     if (!visit) {
-      return res.status(404).json({ message: "Visita no encontrada" });
+      return res.status(404).json({ message: 'Visita no encontrada' });
     }
 
-    await destroyImages(visit.images);
-    await User.updateMany({ savedVisits: visit._id }, { $pull: { savedVisits: visit._id } });
-    await Report.deleteMany({ visit: visit._id });
-    await visit.deleteOne();
+    // Se van con la reseña (en cascada) sus fotos, likes, guardadas y denuncias
+    await prisma.visit.delete({ where: { id: visit.id } });
+    await destroyImages(visit.images.map((image) => image.url));
 
-    logAudit(req.user, { action: "delete", entity: "visit", entityId: visit._id, summary: `Eliminó una reseña (motivo: ${reason})` });
-    res.json({ message: "Reseña eliminada" });
+    logAudit(req.user, { action: 'delete', entity: 'visit', entityId: visit.id, summary: `Eliminó una reseña (motivo: ${reason})` });
+    res.json({ message: 'Reseña eliminada' });
   } catch (error) {
     next(error);
   }
@@ -511,26 +543,23 @@ export const adminDeleteVisit = async (req, res, next) => {
 export const resolveReport = async (req, res, next) => {
   try {
     const { action } = req.body;
-    const report = await Report.findById(req.params.id);
+    const report = isId(req.params.id) ? await prisma.report.findUnique({ where: { id: req.params.id } }) : null;
     if (!report) {
       return res.status(404).json({ message: 'Denuncia no encontrada' });
     }
 
     if (action === 'remove_review') {
-      const visit = await Visit.findById(report.visit);
+      const visit = await prisma.visit.findUnique({ where: { id: report.visitId }, include: { images: visitBaseInclude.images } });
       if (visit) {
-        await destroyImages(visit.images);
-        await User.updateMany({ savedVisits: visit._id }, { $pull: { savedVisits: visit._id } });
-        await visit.deleteOne();
+        await prisma.visit.delete({ where: { id: visit.id } }); // arrastra sus denuncias, guardadas y likes
+        await destroyImages(visit.images.map((image) => image.url));
       }
-      await Report.deleteMany({ visit: report.visit });
-      logAudit(req.user, { action: 'resolve', entity: 'report', entityId: report._id, summary: 'Quitó una reseña denunciada' });
+      logAudit(req.user, { action: 'resolve', entity: 'report', entityId: report.id, summary: 'Quitó una reseña denunciada' });
       return res.json({ message: 'Reseña eliminada' });
     }
     if (action === 'dismiss') {
-      report.status = 'resolved';
-      await report.save();
-      logAudit(req.user, { action: 'resolve', entity: 'report', entityId: report._id, summary: 'Descartó una denuncia' });
+      await prisma.report.update({ where: { id: report.id }, data: { status: 'resolved' } });
+      logAudit(req.user, { action: 'resolve', entity: 'report', entityId: report.id, summary: 'Descartó una denuncia' });
       return res.json({ message: 'Denuncia descartada' });
     }
     return res.status(400).json({ message: 'Acción inválida' });

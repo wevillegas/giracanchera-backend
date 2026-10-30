@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
+import prisma from '../config/prisma.js';
 import { protect, adminOnly, superAdminOnly } from './authMiddleware.js';
 import { imageFilter } from './uploadMiddleware.js';
-import { isObjectId } from '../utils/validation.js';
+import { isId } from '../utils/validation.js';
 
 process.env.JWT_SECRET = 'x'.repeat(40);
 
@@ -17,7 +17,9 @@ const run = async (middleware, req) => {
 };
 
 const tokenFor = (id, v) => jwt.sign({ id, v }, process.env.JWT_SECRET);
-const stubUser = (user) => { User.findById = () => ({ select: async () => user }); };
+// Simula la base: la sesión busca al usuario por id con prisma.user.findUnique
+const U1 = '7c1f6a9e-0b4d-5c2a-9e8f-1a2b3c4d5e6f';
+const stubUser = (user) => { prisma.user.findUnique = async () => user; };
 
 test('protect: sin token responde 401', async () => {
   const out = await run(protect, { headers: {} });
@@ -26,27 +28,34 @@ test('protect: sin token responde 401', async () => {
 });
 
 test('protect: token con tokenVersion vieja responde 401', async () => {
-  stubUser({ _id: 'u1', tokenVersion: 2 });
-  const out = await run(protect, { headers: { authorization: `Bearer ${tokenFor('u1', 1)}` } });
+  stubUser({ id: U1, tokenVersion: 2 });
+  const out = await run(protect, { headers: { authorization: `Bearer ${tokenFor(U1, 1)}` } });
   assert.equal(out.status, 401);
 });
 
 test('protect: token vigente deja pasar y carga el usuario', async () => {
-  const user = { _id: 'u1', tokenVersion: 1 };
+  const user = { id: U1, tokenVersion: 1 };
   stubUser(user);
-  const req = { headers: { authorization: `Bearer ${tokenFor('u1', 1)}` } };
+  const req = { headers: { authorization: `Bearer ${tokenFor(U1, 1)}` } };
   const out = await run(protect, req);
   assert.equal(out.nexted, true);
-  assert.equal(req.user, user);
+  assert.equal(req.user.id, user.id);
+  assert.equal(req.user._id, user.id);
 });
 
 test('protect: acepta el token desde la cookie gc_token', async () => {
-  const user = { _id: 'u1', tokenVersion: 0 };
+  const user = { id: U1, tokenVersion: 0 };
   stubUser(user);
-  const req = { headers: { cookie: `otra=1; gc_token=${tokenFor('u1', 0)}` } };
+  const req = { headers: { cookie: `otra=1; gc_token=${tokenFor(U1, 0)}` } };
   const out = await run(protect, req);
   assert.equal(out.nexted, true);
-  assert.equal(req.user, user);
+  assert.equal(req.user.id, user.id);
+});
+
+test('protect: un id que no es UUID responde 401 sin consultar la base', async () => {
+  prisma.user.findUnique = async () => { throw new Error('no debía consultar la base'); };
+  const out = await run(protect, { headers: { authorization: `Bearer ${tokenFor('abc', 0)}` } });
+  assert.equal(out.status, 401);
 });
 
 test('adminOnly: un usuario común recibe 403, admin y superadmin pasan', async () => {
@@ -69,8 +78,9 @@ test('imageFilter: acepta imágenes y rechaza otros tipos con 400', () => {
   assert.equal(error.status, 400);
 });
 
-test('isObjectId: solo acepta 24 caracteres hex', () => {
-  assert.equal(isObjectId('507f1f77bcf86cd799439011'), true);
-  assert.equal(isObjectId('abc'), false);
-  assert.equal(isObjectId({ $ne: null }), false);
+test('isId: solo acepta UUID', () => {
+  assert.equal(isId(U1), true);
+  assert.equal(isId('507f1f77bcf86cd799439011'), false);
+  assert.equal(isId('abc'), false);
+  assert.equal(isId({ $ne: null }), false);
 });

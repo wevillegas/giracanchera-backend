@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
+import prisma from '../config/prisma.js';
+import { isId } from '../utils/validation.js';
 
 export const COOKIE_NAME = 'gc_token';
 
@@ -11,6 +12,13 @@ function tokenFrom(req) {
   return pair ? decodeURIComponent(pair.slice(COOKIE_NAME.length + 1)) : null;
 }
 
+// Usuario de la sesión, sin la contraseña. `_id` es el mismo id, para el código que lo usa así.
+export async function sessionUser(id) {
+  if (!isId(id)) return null;
+  const user = await prisma.user.findUnique({ where: { id }, omit: { password: true } });
+  return user && { ...user, _id: user.id };
+}
+
 export const protect = async (req, res, next) => {
   try {
     const token = tokenFrom(req);
@@ -20,7 +28,7 @@ export const protect = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.id).select('-password');
+    const user = await sessionUser(decoded.id);
     if (!user) {
       return res.status(401).json({ message: 'No autorizado, usuario no encontrado' });
     }
@@ -43,7 +51,7 @@ export const optionalProtect = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select('-password');
+    const user = await sessionUser(decoded.id);
     if (user && (decoded.v ?? 0) === (user.tokenVersion ?? 0)) req.user = user;
   } catch {
     // Token inválido o vencido: se trata como visitante

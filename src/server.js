@@ -5,9 +5,9 @@
 // demasiado tarde y Cloudinary queda configurado con variables undefined.
 import 'dotenv/config';
 
-import mongoose from 'mongoose';
 import app from './app.js';
-import connectDB from './config/db.js';
+import connectDB, { disconnectDB } from './config/db.js';
+import { purgeOldAuditLogs } from './utils/audit.js';
 
 const PORT = process.env.PORT || 5000;
 
@@ -24,6 +24,14 @@ if (!secret || secret.length < 32) {
 
 const startServer = async () => {
   await connectDB();
+
+  // Auditoría: se borra lo que tenga más de 180 días, al iniciar y después una vez por día
+  const purgeAudit = () => purgeOldAuditLogs()
+    .then((count) => { if (count) console.log(`Auditoría: ${count} registros de más de 180 días borrados`); })
+    .catch((error) => console.error('No se pudo limpiar la auditoría:', error.message));
+  purgeAudit();
+  setInterval(purgeAudit, 24 * 60 * 60 * 1000).unref();
+
   const server = app.listen(PORT, () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);
   });
@@ -32,7 +40,7 @@ const startServer = async () => {
   const shutdown = (signal) => {
     console.log(`${signal} recibido, cerrando...`);
     server.close(async () => {
-      await mongoose.disconnect();
+      await disconnectDB();
       process.exit(0);
     });
     setTimeout(() => process.exit(1), 10000).unref();

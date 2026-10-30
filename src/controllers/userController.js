@@ -1,85 +1,105 @@
-import { isText, escapeRegex, textWithin, isCloudinaryUrl, isUsernameFormat, isEmailFormat, isPasswordFormat } from '../utils/validation.js';
-import User from '../models/User.js';
-import Visit from '../models/Visit.js';
-import Stadium from '../models/Stadium.js';
-import Report from '../models/Report.js';
+import bcrypt from 'bcryptjs';
+import { isText, escapeLike, textWithin, isCloudinaryUrl, isUsernameFormat, isEmailFormat, isPasswordFormat, isId } from '../utils/validation.js';
+import prisma from '../config/prisma.js';
 import { logAudit, diffChanges } from '../utils/audit.js';
 import { destroyImages } from './visitController.js';
-import { isValidClubRef, stadiumExists } from '../utils/refs.js';
-import { isObjectId } from '../utils/validation.js';
+import { isValidClubRef, stadiumExists, userExists } from '../utils/refs.js';
+import {
+  accountJson, clubBadge, clubBadgeSelect, userListSelect, userListItem, locationOf, byText,
+  followingIdsSelect, wishlistIdsSelect, savedIdsSelect, followingIds, wishlistIds, savedIds,
+} from '../db/serialize.js';
 
-// Borra la cuenta y todo lo que depende de ella: reseñas con sus fotos y denuncias, likes, seguidos,
-// guardadas de otros y el avatar. Lo usan tanto "borrar mi cuenta" como el borrado por un admin.
+// Usuario y email se guardan siempre en minúsculas (como hacía el esquema de Mongo)
+export const normalizeLogin = (value) => value.trim().toLowerCase();
+export const hashPassword = async (password) => bcrypt.hash(password, await bcrypt.genSalt(10));
+
+// Borra la cuenta y todo lo que depende de ella: la base arrastra (en cascada) sus reseñas con sus fotos, likes y
+// denuncias, a quién sigue y quién lo sigue, sus guardadas y "por visitar". Acá se borran las imágenes de Cloudinary.
+// Lo usan tanto "borrar mi cuenta" como el borrado por un admin.
 async function purgeUser(user) {
-  const visits = await Visit.find({ user: user._id }).select('images');
-  const visitIds = visits.map((visit) => visit._id);
-  await destroyImages([...visits.flatMap((visit) => visit.images), user.avatarUrl].filter(Boolean));
-  await Promise.all([
-    Visit.deleteMany({ user: user._id }),
-    Report.deleteMany({ $or: [{ reporter: user._id }, { visit: { $in: visitIds } }] }),
-    Visit.updateMany({ likes: user._id }, { $pull: { likes: user._id } }),
-    User.updateMany({ following: user._id }, { $pull: { following: user._id } }),
-    User.updateMany({ savedVisits: { $in: visitIds } }, { $pull: { savedVisits: { $in: visitIds } } }),
-  ]);
-  await user.deleteOne();
+  const images = await prisma.visitImage.findMany({ where: { visit: { userId: user.id } }, select: { url: true } });
+  await prisma.user.delete({ where: { id: user.id } });
+  await destroyImages([...images.map((image) => image.url), user.avatarUrl].filter(Boolean));
 }
 
 // Estadios distintos que el usuario ya visitó (según sus reseñas reales en la BD)
 async function getVisitStats(userId) {
-  const visitedStadiumIds = await Visit.distinct('stadium', { user: userId });
-
-  const visitedStadiums = await Stadium.find({ _id: { $in: visitedStadiumIds } })
-    .select('name imageUrl location')
-    .sort({ name: 1 });
-
+  const stadiums = await prisma.stadium.findMany({
+    where: { visits: { some: { userId } } },
+    select: { id: true, name: true, imageUrl: true, city: true, province: true, country: true, lat: true, lng: true },
+  });
+  const visitedStadiums = stadiums.sort(byText('name')).map((s) => ({ _id: s.id, name: s.name, imageUrl: s.imageUrl, location: locationOf(s) }));
   return { visitedStadiums, visitedCount: visitedStadiums.length };
 }
 
-// Escudo del club de hincha que se muestra junto a la foto en listas de usuarios
-const CLUB_BADGE = { path: 'clubHincha', select: 'name logoUrl' };
-
-// Campos que cualquiera puede ver de un perfil: sin email, guardadas, rol ni datos de sesión
-const PUBLIC_PROFILE_FIELDS = 'username nombre avatarUrl bio clubHincha fechaNacimiento following wantToVisit createdAt';
-
 // Marca en cada usuario de una lista si ya sigue al que mira (followsViewer)
-const withFollowsViewer = async (users, viewerId) => {
-  const plain = users.filter(Boolean).map((u) => (u.toObject ? u.toObject() : u));
-  const followingViewer = new Set(
-    viewerId ? (await User.find({ _id: { $in: plain.map((u) => u._id) }, following: viewerId }).distinct('_id')).map(String) : []
+async function withFollowsViewer(users, viewerId) {
+  const followsViewer = new Set(
+    viewerId && users.length
+      ? (await prisma.follow.findMany({ where: { followedId: viewerId, followerId: { in: users.map((u) => u.id) } }, select: { followerId: true } }))
+        .map((f) => f.followerId)
+      : [],
   );
-  return plain.map((u) => ({ ...u, followsViewer: followingViewer.has(String(u._id)) }));
+  return users.map((u) => ({ ...userListItem(u), followsViewer: followsViewer.has(u.id) }));
+}
+
+// A quién sigue (en el orden en que lo siguió) y quién lo sigue (en el orden en que se registraron)
+async function followLists(userId, viewerId) {
+  const [following, followers] = await Promise.all([
+    prisma.follow.findMany({ where: { followerId: userId }, orderBy: { createdAt: 'asc' }, select: { followed: { select: userListSelect } } }),
+    prisma.user.findMany({ where: { following: { some: { followedId: userId } } }, orderBy: { seq: 'asc' }, select: userListSelect }),
+  ]);
+  const [followingWithFlag, followersWithFlag] = await Promise.all([
+    withFollowsViewer(following.map((f) => f.followed), viewerId),
+    withFollowsViewer(followers, viewerId),
+  ]);
+  return { following: followingWithFlag, followers: followersWithFlag, followersCount: followers.length };
+}
+
+// Estadios "por visitar" en el orden en que se agregaron, con los campos pedidos
+const wishlistStadiums = async (userId, select) => {
+  const rows = await prisma.wishlist.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, select: { stadium: { select } } });
+  return rows.map((r) => r.stadium);
 };
+const stadiumLocationSelect = { id: true, name: true, city: true, province: true, country: true, lat: true, lng: true };
 
 export const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user._id)
-      .select('-password')
-      .populate('clubHincha', 'name logoUrl')
-      .populate('wantToVisit', 'name imageUrl location capacity mainClub')
-      .populate({ path: 'following', select: 'username avatarUrl bio clubHincha', populate: CLUB_BADGE });
-
-    const [followers, visitStats] = await Promise.all([
-      User.find({ following: req.user._id }).select('username avatarUrl bio clubHincha').populate(CLUB_BADGE),
-      getVisitStats(req.user._id),
-    ]);
-
-    const viewerId = req.user._id;
-    const [followersWithFlag, followingWithFlag] = await Promise.all([
-      withFollowsViewer(followers, viewerId),
-      withFollowsViewer(user.following, viewerId),
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      omit: { password: true },
+      include: { clubHincha: { select: clubBadgeSelect }, ...savedIdsSelect },
+    });
+    const [wanted, lists, visitStats] = await Promise.all([
+      wishlistStadiums(user.id, { ...stadiumLocationSelect, imageUrl: true, capacity: true, mainClubId: true }),
+      followLists(user.id, user.id),
+      getVisitStats(user.id),
     ]);
 
     res.json({
-      ...user.toJSON(),
-      following: followingWithFlag,
-      followers: followersWithFlag,
-      followersCount: followers.length,
+      ...accountJson(user, {
+        clubHincha: clubBadge(user.clubHincha),
+        following: lists.following,
+        wantToVisit: wanted.map((s) => ({ _id: s.id, name: s.name, imageUrl: s.imageUrl, location: locationOf(s), capacity: s.capacity, mainClub: s.mainClubId })),
+        savedVisits: savedIds(user),
+      }),
+      followers: lists.followers,
+      followersCount: lists.followersCount,
       ...visitStats,
     });
   } catch (error) {
     next(error);
   }
 };
+
+// Cuenta con sus listas como ids (respuesta de las ediciones, como el documento de Mongo sin poblar)
+const accountInclude = (clubSelect) => ({ clubHincha: { select: clubSelect }, ...followingIdsSelect, ...wishlistIdsSelect, ...savedIdsSelect });
+const accountWithIds = (user) => accountJson(user, {
+  clubHincha: user.clubHincha ? { _id: user.clubHincha.id, ...Object.fromEntries(Object.entries(user.clubHincha).filter(([k]) => k !== 'id')) } : null,
+  following: followingIds(user),
+  wantToVisit: wishlistIds(user),
+  savedVisits: savedIds(user),
+});
 
 export const updateProfile = async (req, res, next) => {
   try {
@@ -101,7 +121,7 @@ export const updateProfile = async (req, res, next) => {
     }
 
     if (avatarUrl !== undefined) {
-      if (!isCloudinaryUrl(avatarUrl.trim())) {
+      if (!isText(avatarUrl) || !isCloudinaryUrl(avatarUrl.trim())) {
         return res.status(400).json({ message: 'avatarUrl debe ser una URL de Cloudinary' });
       }
       updates.avatarUrl = avatarUrl.trim();
@@ -116,20 +136,21 @@ export const updateProfile = async (req, res, next) => {
         if (req.file) await destroyImages([req.file.path]);
         return res.status(400).json({ message: 'El club elegido no existe' });
       }
-      updates.clubHincha = clubHincha || null;
+      updates.clubHinchaId = clubHincha || null;
     }
 
     const previousAvatar = updates.avatarUrl && updates.avatarUrl !== req.user.avatarUrl ? req.user.avatarUrl : '';
-    const user = await User.findByIdAndUpdate(req.user._id, updates, {
-      new: true,
-      runValidators: true,
-    })
-      .select('-password')
-      .populate('clubHincha', 'name logoUrl');
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data: updates,
+      omit: { password: true },
+      include: accountInclude(clubBadgeSelect),
+    });
 
     if (previousAvatar) await destroyImages([previousAvatar]);
-    logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó su perfil @${user.username}`, fields: Object.keys(updates) });
-    res.json(user);
+    const fields = Object.keys(updates).map((key) => (key === 'clubHinchaId' ? 'clubHincha' : key));
+    logAudit(req.user, { action: 'update', entity: 'user', entityId: user.id, summary: `Editó su perfil @${user.username}`, fields });
+    res.json(accountWithIds(user));
   } catch (error) {
     next(error);
   }
@@ -139,51 +160,58 @@ export const searchUsers = async (req, res, next) => {
   try {
     const raw = req.query.username;
     if (!isText(raw)) return res.json([]);
-    // Texto literal, acotado: sin regex del usuario
+    // Texto literal, acotado
     const q = raw.trim().slice(0, 50);
     if (!q) return res.json([]);
 
-    const users = await User.find({
-      username: { $regex: escapeRegex(q), $options: 'i' },
-      _id: { $ne: req.user._id },
-    })
-      .select('username avatarUrl nombre')
-      .limit(10);
+    const users = await prisma.user.findMany({
+      where: { username: { contains: escapeLike(q), mode: 'insensitive' }, id: { not: req.user.id } },
+      select: { id: true, username: true, avatarUrl: true, nombre: true },
+      orderBy: { seq: 'asc' },
+      take: 10,
+    });
 
-    res.json(users);
+    res.json(users.map((u) => ({ _id: u.id, username: u.username, avatarUrl: u.avatarUrl, nombre: u.nombre })));
   } catch (error) {
     next(error);
   }
 };
 
+// Perfil que cualquiera puede ver: sin email, guardadas, rol ni datos de sesión
 export const getPublicProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id)
-      .select(PUBLIC_PROFILE_FIELDS)
-      .populate('clubHincha', 'name logoUrl')
-      .populate({ path: 'following', select: 'username avatarUrl bio clubHincha', populate: CLUB_BADGE })
-      .populate('wantToVisit', 'name location imageUrl');
+    if (!isId(req.params.id)) return res.status(400).json({ message: 'Datos inválidos' });
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true, username: true, nombre: true, avatarUrl: true, bio: true, fechaNacimiento: true, createdAt: true,
+        clubHincha: { select: clubBadgeSelect },
+      },
+    });
 
     if (!user) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    const [followers, visitStats] = await Promise.all([
-      User.find({ following: req.params.id }).select('username avatarUrl bio clubHincha').populate(CLUB_BADGE),
-      getVisitStats(req.params.id),
-    ]);
-
-    const viewerId = req.user?._id;
-    const [followersWithFlag, followingWithFlag] = await Promise.all([
-      withFollowsViewer(followers, viewerId),
-      withFollowsViewer(user.following, viewerId),
+    const [wanted, lists, visitStats] = await Promise.all([
+      wishlistStadiums(user.id, { ...stadiumLocationSelect, imageUrl: true }),
+      followLists(user.id, req.user?.id),
+      getVisitStats(user.id),
     ]);
 
     res.json({
-      ...user.toJSON(),
-      following: followingWithFlag,
-      followers: followersWithFlag,
-      followersCount: followers.length,
+      _id: user.id,
+      nombre: user.nombre,
+      username: user.username,
+      avatarUrl: user.avatarUrl,
+      bio: user.bio,
+      fechaNacimiento: user.fechaNacimiento,
+      clubHincha: clubBadge(user.clubHincha),
+      following: lists.following,
+      wantToVisit: wanted.map((s) => ({ _id: s.id, name: s.name, imageUrl: s.imageUrl, location: locationOf(s) })),
+      createdAt: user.createdAt,
+      followers: lists.followers,
+      followersCount: lists.followersCount,
       ...visitStats,
     });
   } catch (error) {
@@ -198,13 +226,16 @@ export const toggleWantToVisit = async (req, res, next) => {
       return res.status(404).json({ message: 'Estadio no encontrado' });
     }
 
-    const isWanted = req.user.wantToVisit.some((id) => id.toString() === stadiumId);
-    const { wantToVisit } = await User.findByIdAndUpdate(
-      req.user._id,
-      isWanted ? { $pull: { wantToVisit: stadiumId } } : { $addToSet: { wantToVisit: stadiumId } },
-      { new: true }
-    ).select('wantToVisit');
-    res.json({ wantToVisit });
+    const removed = await prisma.wishlist.deleteMany({ where: { userId: req.user.id, stadiumId } });
+    if (removed.count === 0) {
+      await prisma.wishlist.upsert({
+        where: { userId_stadiumId: { userId: req.user.id, stadiumId } },
+        create: { userId: req.user.id, stadiumId },
+        update: {},
+      });
+    }
+    const rows = await prisma.wishlist.findMany({ where: { userId: req.user.id }, orderBy: { createdAt: 'asc' }, select: { stadiumId: true } });
+    res.json({ wantToVisit: rows.map((r) => r.stadiumId) });
   } catch (error) {
     next(error);
   }
@@ -212,12 +243,15 @@ export const toggleWantToVisit = async (req, res, next) => {
 
 export const getAllUsers = async (req, res, next) => {
   try {
-    const users = await User.find()
-      .select('-password -tokenVersion -savedVisits')
-      .populate('clubHincha', 'name logoUrl')
-      .sort({ createdAt: -1 });
+    const users = await prisma.user.findMany({
+      omit: { password: true },
+      include: { clubHincha: { select: clubBadgeSelect }, ...followingIdsSelect, ...wishlistIdsSelect },
+      orderBy: [{ createdAt: 'desc' }, { seq: 'asc' }],
+    });
 
-    res.json(users);
+    res.json(users.map((u) => accountJson(u, {
+      clubHincha: clubBadge(u.clubHincha), following: followingIds(u), wantToVisit: wishlistIds(u), withSession: false,
+    })));
   } catch (error) {
     next(error);
   }
@@ -227,28 +261,35 @@ export const getAllUsers = async (req, res, next) => {
 export const adminUserActivity = async (req, res, next) => {
   try {
     const { id } = req.params;
-    if (!isObjectId(id)) return res.status(400).json({ message: 'Usuario inválido' });
-    const user = await User.findById(id).select('username createdAt rol mutedUntil');
+    if (!isId(id)) return res.status(400).json({ message: 'Usuario inválido' });
+    const user = await prisma.user.findUnique({ where: { id }, select: { id: true, username: true, createdAt: true, rol: true, mutedUntil: true } });
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
 
-    const [visits, hidden, reportsMade, lastVisits, ratingAgg, authored] = await Promise.all([
-      Visit.countDocuments({ user: id }),
-      Visit.countDocuments({ user: id, hidden: true }),
-      Report.countDocuments({ reporter: id }),
-      Visit.find({ user: id }).sort({ createdAt: -1 }).limit(5).select('rating reviewText hidden createdAt stadium').populate('stadium', 'name'),
-      Visit.aggregate([{ $match: { user: user._id } }, { $group: { _id: null, avg: { $avg: '$rating' } } }]),
-      Visit.find({ user: id }).select('_id'),
+    const [visits, hidden, reportsMade, reportsReceived, lastVisits, rating] = await Promise.all([
+      prisma.visit.count({ where: { userId: id } }),
+      prisma.visit.count({ where: { userId: id, hidden: true } }),
+      prisma.report.count({ where: { reporterId: id } }),
+      prisma.report.count({ where: { visit: { userId: id } } }),
+      prisma.visit.findMany({
+        where: { userId: id },
+        orderBy: [{ createdAt: 'desc' }, { seq: 'asc' }],
+        take: 5,
+        select: { id: true, rating: true, reviewText: true, hidden: true, createdAt: true, stadium: { select: { id: true, name: true } } },
+      }),
+      prisma.visit.aggregate({ where: { userId: id }, _avg: { rating: true } }),
     ]);
-    const reportsReceived = await Report.countDocuments({ visit: { $in: authored.map((v) => v._id) } });
 
     res.json({
-      user,
+      user: { _id: user.id, username: user.username, createdAt: user.createdAt, rol: user.rol, mutedUntil: user.mutedUntil },
       visits,
       hidden,
       reportsMade,
       reportsReceived,
-      avgRating: ratingAgg[0] ? Number(ratingAgg[0].avg.toFixed(1)) : null,
-      lastVisits,
+      avgRating: rating._avg.rating === null ? null : Number(rating._avg.rating.toFixed(1)),
+      lastVisits: lastVisits.map((v) => ({
+        _id: v.id, rating: v.rating, reviewText: v.reviewText, hidden: v.hidden, createdAt: v.createdAt,
+        stadium: v.stadium && { _id: v.stadium.id, name: v.stadium.name },
+      })),
     });
   } catch (error) {
     next(error);
@@ -258,12 +299,18 @@ export const adminUserActivity = async (req, res, next) => {
 export const adminUpdateUser = async (req, res, next) => {
   try {
     const { nombre, username, email, rol, bio, clubHincha, mutedDays } = req.body;
-    const updates = {};
+    const updates = {}; // en los nombres de la API (para la auditoría)
+    let bumpSession = false;
 
     const isSuper = req.user.rol === 'superadmin';
-    const isSelf = req.params.id === req.user._id.toString();
+    const isSelf = req.params.id === req.user.id;
 
-    const target = await User.findById(req.params.id).select('nombre username email rol bio clubHincha mutedUntil');
+    const target = isId(req.params.id)
+      ? await prisma.user.findUnique({
+        where: { id: req.params.id },
+        select: { nombre: true, username: true, email: true, rol: true, bio: true, clubHinchaId: true, mutedUntil: true },
+      })
+      : null;
     if (!target) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
@@ -289,13 +336,13 @@ export const adminUpdateUser = async (req, res, next) => {
       if (!isUsernameFormat(username)) {
         return res.status(400).json({ message: 'El usuario debe tener entre 3 y 30 caracteres: letras, números, punto, guion o guion bajo' });
       }
-      updates.username = username.trim();
+      updates.username = normalizeLogin(username);
     }
     if (email !== undefined) {
       if (!isEmailFormat(email)) {
         return res.status(400).json({ message: 'El email no es válido' });
       }
-      updates.email = email.trim();
+      updates.email = normalizeLogin(email);
     }
     if (bio !== undefined) {
       if (!textWithin(bio, 300)) return res.status(400).json({ message: 'La bio debe ser texto de hasta 300 caracteres' });
@@ -310,7 +357,7 @@ export const adminUpdateUser = async (req, res, next) => {
       }
       updates.rol = rol;
       // Cambio de rol: las sesiones abiertas de ese usuario se reinician
-      if (rol !== target.rol) updates.$inc = { tokenVersion: 1 };
+      if (rol !== target.rol) bumpSession = true;
     }
     if (clubHincha !== undefined) {
       if (!(await isValidClubRef(clubHincha))) return res.status(400).json({ message: 'El club elegido no existe' });
@@ -324,19 +371,21 @@ export const adminUpdateUser = async (req, res, next) => {
       updates.mutedUntil = days === 0 ? null : new Date(Date.now() + days * 24 * 60 * 60 * 1000);
     }
 
-    const user = await User.findByIdAndUpdate(req.params.id, updates, {
-      new: true,
-      runValidators: true,
-    })
-      .select('-password')
-      .populate('clubHincha', 'name');
+    const { clubHincha: club, ...columns } = updates;
+    const user = await prisma.user.update({
+      where: { id: req.params.id },
+      data: {
+        ...columns,
+        ...(club !== undefined && { clubHinchaId: club }),
+        ...(bumpSession && { tokenVersion: { increment: 1 } }),
+      },
+      omit: { password: true },
+      include: accountInclude({ id: true, name: true }),
+    });
 
-    if (!user) {
-      return res.status(404).json({ message: 'Usuario no encontrado' });
-    }
-
-    logAudit(req.user, { action: 'update', entity: 'user', entityId: user._id, summary: `Editó al usuario @${user.username}`, fields: Object.keys(updates).filter((k) => k !== '$inc'), changes: diffChanges(target, updates) });
-    res.json(user);
+    const before = { ...target, clubHincha: target.clubHinchaId };
+    logAudit(req.user, { action: 'update', entity: 'user', entityId: user.id, summary: `Editó al usuario @${user.username}`, fields: Object.keys(updates), changes: diffChanges(before, updates) });
+    res.json(accountWithIds(user));
   } catch (error) {
     next(error);
   }
@@ -346,11 +395,11 @@ export const adminDeleteUser = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    if (id === req.user._id.toString()) {
+    if (id === req.user.id) {
       return res.status(400).json({ message: 'No podés eliminar tu propia cuenta' });
     }
 
-    const target = await User.findById(id).select('rol username avatarUrl');
+    const target = isId(id) ? await prisma.user.findUnique({ where: { id }, select: { id: true, rol: true, username: true, avatarUrl: true } }) : null;
     if (!target) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
@@ -374,23 +423,26 @@ export const adminDeleteUser = async (req, res, next) => {
 export const toggleFollow = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const user = req.user;
+    const me = req.user.id;
 
-    if (userId === user._id.toString()) {
+    if (userId === me) {
       return res.status(400).json({ message: 'No podés seguirte a vos mismo' });
     }
 
-    if (!isObjectId(userId) || !(await User.exists({ _id: userId }))) {
+    if (!(await userExists(userId))) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
 
-    const isFollowing = user.following.some((id) => id.toString() === userId);
-    const { following } = await User.findByIdAndUpdate(
-      user._id,
-      isFollowing ? { $pull: { following: userId } } : { $addToSet: { following: userId } },
-      { new: true }
-    ).select('following');
-    res.json({ following });
+    const removed = await prisma.follow.deleteMany({ where: { followerId: me, followedId: userId } });
+    if (removed.count === 0) {
+      await prisma.follow.upsert({
+        where: { followerId_followedId: { followerId: me, followedId: userId } },
+        create: { followerId: me, followedId: userId },
+        update: {},
+      });
+    }
+    const rows = await prisma.follow.findMany({ where: { followerId: me }, orderBy: { createdAt: 'asc' }, select: { followedId: true } });
+    res.json({ following: rows.map((r) => r.followedId) });
   } catch (error) {
     next(error);
   }
@@ -403,14 +455,14 @@ export const deleteMe = async (req, res, next) => {
     if (!isText(password)) {
       return res.status(400).json({ message: 'Ingresá tu contraseña para confirmar' });
     }
-    const user = await User.findById(req.user._id);
-    if (!(await user.comparePassword(password))) {
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ message: 'La contraseña no es correcta' });
     }
 
     await purgeUser(user);
 
-    logAudit(user, { action: 'delete', entity: 'user', entityId: user._id, summary: `Eliminó su cuenta @${user.username}` });
+    logAudit(user, { action: 'delete', entity: 'user', entityId: user.id, summary: `Eliminó su cuenta @${user.username}` });
     res.json({ message: 'Cuenta eliminada' });
   } catch (error) {
     next(error);
@@ -428,17 +480,18 @@ export const changePassword = async (req, res, next) => {
       return res.status(400).json({ message: 'La nueva contraseña debe tener entre 8 y 128 caracteres, con al menos una letra y un número' });
     }
 
-    const user = await User.findById(req.user._id);
-    if (!(await user.comparePassword(currentPassword))) {
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!(await bcrypt.compare(currentPassword, user.password))) {
       return res.status(401).json({ message: 'La contraseña actual no es correcta' });
     }
 
-    user.password = newPassword;
     // Cierra las demás sesiones: un token robado deja de valer al cambiar la clave
-    user.tokenVersion += 1;
-    await user.save();
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { password: await hashPassword(newPassword), tokenVersion: { increment: 1 } },
+    });
 
-    logAudit(user, { action: 'update', entity: 'user', entityId: user._id, summary: `Cambió su contraseña @${user.username}` });
+    logAudit(user, { action: 'update', entity: 'user', entityId: user.id, summary: `Cambió su contraseña @${user.username}` });
     res.json({ message: 'Contraseña actualizada' });
   } catch (error) {
     next(error);
@@ -446,21 +499,24 @@ export const changePassword = async (req, res, next) => {
 };
 
 const EXPENSE_FIELDS = ['ticket', 'food', 'parking', 'transport'];
+const EXPENSE_COLUMN = { ticket: 'expenseTicket', food: 'expenseFood', parking: 'expenseParking', transport: 'expenseTransport' };
 const monthKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 
 // Estadísticas personales: solo el propio usuario las ve (se calculan con sus visitas)
 export const getMyStats = async (req, res, next) => {
   try {
-    const visits = await Visit.find({ user: req.user._id })
-      .select('stadium rating visitDate expenses matchDetails')
-      .populate({
-        path: 'stadium',
-        select: 'name location capacity imageUrl mainClub',
-        populate: { path: 'mainClub', select: 'name logoUrl' },
-      });
+    const visits = await prisma.visit.findMany({
+      where: { userId: req.user.id },
+      // Mismo recorrido que hacía Mongo (por su índice: de la más nueva a la más vieja): decide los empates del favorito y del mes
+      orderBy: [{ createdAt: 'desc' }, { seq: 'asc' }],
+      select: {
+        stadiumId: true, rating: true, visitDate: true, homeTeam: true, awayTeam: true,
+        expenseTicket: true, expenseFood: true, expenseParking: true, expenseTransport: true,
+        stadium: { select: { name: true, city: true, province: true, country: true, capacity: true, imageUrl: true, mainClub: { select: { name: true, logoUrl: true } } } },
+      },
+    });
 
     const stadiumCounts = new Map();
-    const stadiumData = new Map();
     const monthCounts = new Map();
     const spendByField = Object.fromEntries(EXPENSE_FIELDS.map((f) => [f, 0]));
     let ratingSum = 0;
@@ -469,32 +525,29 @@ export const getMyStats = async (req, res, next) => {
     let totalSpent = 0;
 
     for (const v of visits) {
-      const stadiumId = String(v.stadium?._id || v.stadium);
-      const current = stadiumCounts.get(stadiumId) || { name: v.stadium?.name || 'Estadio', visits: 0 };
+      const current = stadiumCounts.get(v.stadiumId) || { name: v.stadium?.name || 'Estadio', visits: 0, doc: v.stadium };
       current.visits += 1;
-      stadiumCounts.set(stadiumId, current);
-      if (v.stadium?._id && !stadiumData.has(stadiumId)) stadiumData.set(stadiumId, v.stadium);
+      stadiumCounts.set(v.stadiumId, current);
 
       const month = monthKey(new Date(v.visitDate));
       monthCounts.set(month, (monthCounts.get(month) || 0) + 1);
 
       ratingSum += v.rating;
-      if (v.matchDetails?.homeTeam || v.matchDetails?.awayTeam) matches += 1;
+      if (v.homeTeam || v.awayTeam) matches += 1;
 
-      const visitTotal = EXPENSE_FIELDS.reduce((sum, f) => sum + (v.expenses?.[f] || 0), 0);
+      const visitTotal = EXPENSE_FIELDS.reduce((sum, f) => sum + (v[EXPENSE_COLUMN[f]] || 0), 0);
       if (visitTotal > 0) spentVisits += 1;
       totalSpent += visitTotal;
-      EXPENSE_FIELDS.forEach((f) => { spendByField[f] += v.expenses?.[f] || 0; });
+      EXPENSE_FIELDS.forEach((f) => { spendByField[f] += v[EXPENSE_COLUMN[f]] || 0; });
     }
 
-    const [favoriteId, favoriteCount] = [...stadiumCounts.entries()].sort((a, b) => b[1].visits - a[1].visits)[0] || [];
-    const favorite = favoriteCount ? { ...favoriteCount, doc: stadiumData.get(favoriteId) } : null;
+    const favorite = [...stadiumCounts.values()].sort((a, b) => b.visits - a.visits)[0] || null;
 
     // Partidos de su club de hincha (según el partido cargado en cada visita)
-    const me = await User.findById(req.user._id).select('clubHincha').populate('clubHincha', 'name');
+    const me = await prisma.user.findUnique({ where: { id: req.user.id }, select: { clubHincha: { select: { name: true } } } });
     const clubName = me?.clubHincha?.name || '';
     const clubMatches = clubName
-      ? { clubName, count: visits.filter((v) => v.matchDetails?.homeTeam === clubName || v.matchDetails?.awayTeam === clubName).length }
+      ? { clubName, count: visits.filter((v) => v.homeTeam === clubName || v.awayTeam === clubName).length }
       : null;
 
     const topMonth = [...monthCounts.entries()].sort((a, b) => b[1] - a[1])[0];
@@ -511,9 +564,9 @@ export const getMyStats = async (req, res, next) => {
       favoriteStadium: favorite ? {
         name: favorite.name,
         visits: favorite.visits,
-        city: favorite.doc?.location?.city || '',
-        province: favorite.doc?.location?.province || '',
-        country: favorite.doc?.location?.country || '',
+        city: favorite.doc?.city || '',
+        province: favorite.doc?.province || '',
+        country: favorite.doc?.country || '',
         capacity: favorite.doc?.capacity ?? null,
         imageUrl: favorite.doc?.imageUrl || '',
         clubName: favorite.doc?.mainClub?.name || '',

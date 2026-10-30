@@ -1,0 +1,320 @@
+// Esquema de GiraCanchera en PostgreSQL.
+// Tablas y columnas en snake_case (para las consultas SQL de estadísticas); en el código, camelCase.
+// Fechas con zona horaria y precisión de milisegundos, igual que en Mongo: así ninguna fecha se corre de día.
+// mongo_id: id original de Mongo, solo para migrar y comparar; se borra al terminar la migración.
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Rol {
+  user
+  admin
+  superadmin
+}
+
+enum OwnerType {
+  club
+  province
+}
+
+enum ReportStatus {
+  open
+  resolved
+}
+
+enum SuggestionStatus {
+  pending
+  approved
+  rejected
+}
+
+enum AuditAction {
+  create
+  update
+  delete
+  resolve
+}
+
+enum AuditEntity {
+  stadium
+  club
+  user
+  visit
+  report
+  suggestion
+}
+
+model Club {
+  id        String   @id @default(uuid()) @db.Uuid
+  mongoId   String?  @unique @map("mongo_id")
+  name      String   @unique
+  logoUrl   String   @default("") @map("logo_url")
+  location  String   @default("")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  stadiums Stadium[]
+  fans     User[]
+
+  @@map("clubs")
+}
+
+model Stadium {
+  id            String    @id @default(uuid()) @db.Uuid
+  seq           Int       @unique @default(autoincrement()) // orden de inserción: desempata listas igual que el orden natural de Mongo
+  mongoId       String?   @unique @map("mongo_id")
+  name          String
+  capacity      Int
+  city          String
+  province      String    @default("") // vacío en ciudades sin provincia (ej: CABA)
+  country       String
+  lat           Float
+  lng           Float
+  // 'club': lo posee mainClub (o nadie, si está vacío); 'province': propiedad de la provincia
+  ownerType     OwnerType @default(club) @map("owner_type")
+  mainClubId    String?   @map("main_club_id") @db.Uuid
+  imageUrl      String    @default("") @map("image_url") // portada: igual a la primera foto cuando hay fotos
+  // Ficha: todo opcional
+  nickname      String    @default("")
+  openedYear    Int?      @map("opened_year")
+  surface       String    @default("") // '', natural, sintetico, hibrido
+  pitchLength   Float?    @map("pitch_length") // medidas de la cancha en metros
+  pitchWidth    Float?    @map("pitch_width")
+  status        String    @default("") // '', activo, en_obra, demolido
+  history       String    @default("")
+  funFacts      String[]  @default([]) @map("fun_facts")
+  otherUses     String[]  @default([]) @map("other_uses") // otros clubes, selección, recitales
+  // Sugerencia de Wikidata pendiente de revisión: no se ve en el sitio hasta que un admin la guarda
+  wikidataDraft Json?     @map("wikidata_draft")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  mainClub    Club?               @relation(fields: [mainClubId], references: [id], onDelete: SetNull)
+  photos      StadiumPhoto[]
+  visits      Visit[]
+  wishedBy    Wishlist[]
+  suggestions StadiumSuggestion[]
+
+  @@index([mainClubId])
+  @@map("stadiums")
+}
+
+model StadiumPhoto {
+  id        String @id @default(uuid()) @db.Uuid
+  stadiumId String @map("stadium_id") @db.Uuid
+  position  Int // orden: la 0 es la portada
+  url       String
+  credit    String @default("")
+
+  stadium Stadium @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
+
+  @@unique([stadiumId, position])
+  @@map("stadium_photos")
+}
+
+model User {
+  id              String    @id @default(uuid()) @db.Uuid
+  seq             Int       @unique @default(autoincrement()) // orden de inserción: desempata listas igual que el orden natural de Mongo
+  mongoId         String?   @unique @map("mongo_id")
+  nombre          String?
+  username        String    @unique // se guarda en minúsculas
+  email           String    @unique // se guarda en minúsculas
+  password        String // hash bcrypt
+  fechaNacimiento DateTime? @map("fecha_nacimiento") @db.Timestamptz(3)
+  clubHinchaId    String?   @map("club_hincha_id") @db.Uuid
+  rol             Rol       @default(user)
+  avatarUrl       String    @default("") @map("avatar_url")
+  bio             String    @default("") @db.VarChar(300)
+  mutedUntil      DateTime? @map("muted_until") @db.Timestamptz(3) // sanción: hasta esa fecha no puede publicar ni editar reseñas
+  tokenVersion    Int       @default(0) @map("token_version") // sube al cerrar sesión: los tokens anteriores dejan de valer
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  clubHincha  Club?               @relation(fields: [clubHinchaId], references: [id], onDelete: SetNull)
+  following   Follow[]            @relation("follower")
+  followers   Follow[]            @relation("followed")
+  wishlist    Wishlist[]
+  visits      Visit[]
+  likes       VisitLike[]
+  saved       SavedVisit[]
+  reports     Report[]
+  suggestions StadiumSuggestion[]
+  auditLogs   AuditLog[]
+
+  @@index([clubHinchaId])
+  @@map("users")
+}
+
+// Quién sigue a quién. created_at conserva el orden en que se siguió.
+model Follow {
+  followerId String   @map("follower_id") @db.Uuid
+  followedId String   @map("followed_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  follower User @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followed User @relation("followed", fields: [followedId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followedId])
+  @@index([followedId])
+  @@map("follows")
+}
+
+// Estadios "por visitar". created_at conserva el orden en que se agregaron.
+model Wishlist {
+  userId    String   @map("user_id") @db.Uuid
+  stadiumId String   @map("stadium_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stadium Stadium @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
+
+  @@id([userId, stadiumId])
+  @@index([stadiumId])
+  @@map("wishlist")
+}
+
+model Visit {
+  id               String   @id @default(uuid()) @db.Uuid
+  seq              Int      @unique @default(autoincrement()) // orden de inserción: desempata listas igual que el orden natural de Mongo
+  mongoId          String?  @unique @map("mongo_id")
+  userId           String   @map("user_id") @db.Uuid
+  stadiumId        String   @map("stadium_id") @db.Uuid
+  visitDate        DateTime @map("visit_date") @db.Timestamptz(3)
+  rating           Int // de 1 a 10, solo enteros (los promedios sí llevan decimales)
+  reviewText       String   @default("") @map("review_text") @db.VarChar(1000)
+  // Moderación: una reseña oculta no se ve ni cuenta, pero se conserva y el admin puede volver a mostrarla
+  hidden           Boolean  @default(false)
+  hiddenReason     String   @default("") @map("hidden_reason") @db.VarChar(300)
+  // Partido (opcional)
+  homeTeam         String   @default("") @map("home_team")
+  awayTeam         String   @default("") @map("away_team")
+  score            String   @default("")
+  // Gastos
+  expenseTicket    Float    @default(0) @map("expense_ticket")
+  expenseTransport Float    @default(0) @map("expense_transport")
+  expenseFood      Float    @default(0) @map("expense_food")
+  expenseParking   Float    @default(0) @map("expense_parking")
+  currency         String   @default("ARS")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stadium Stadium      @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
+  images  VisitImage[]
+  likes   VisitLike[]
+  savedBy SavedVisit[]
+  reports Report[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([stadiumId, visitDate(sort: Desc)])
+  @@map("visits")
+}
+
+model VisitImage {
+  id       String @id @default(uuid()) @db.Uuid
+  visitId  String @map("visit_id") @db.Uuid
+  position Int
+  url      String
+
+  visit Visit @relation(fields: [visitId], references: [id], onDelete: Cascade)
+
+  @@unique([visitId, position])
+  @@map("visit_images")
+}
+
+model VisitLike {
+  visitId   String   @map("visit_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  visit Visit @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([visitId, userId])
+  @@index([userId])
+  @@map("visit_likes")
+}
+
+// Reseñas guardadas (lista privada). created_at conserva el orden en que se guardaron.
+model SavedVisit {
+  userId    String   @map("user_id") @db.Uuid
+  visitId   String   @map("visit_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  visit Visit @relation(fields: [visitId], references: [id], onDelete: Cascade)
+
+  @@id([userId, visitId])
+  @@index([visitId])
+  @@map("saved_visits")
+}
+
+// Denuncia de una reseña; un usuario puede denunciar una misma reseña una sola vez
+model Report {
+  id         String       @id @default(uuid()) @db.Uuid
+  mongoId    String?      @unique @map("mongo_id")
+  visitId    String       @map("visit_id") @db.Uuid
+  reporterId String       @map("reporter_id") @db.Uuid
+  reason     String       @db.VarChar(300)
+  status     ReportStatus @default(open)
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  visit    Visit @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  reporter User  @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@unique([visitId, reporterId])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("reports")
+}
+
+// Corrección de un dato del estadio propuesta por un usuario. Un usuario tiene como mucho una pendiente
+// por dato y estadio: ese índice único parcial está en la migración SQL (Prisma no lo expresa).
+model StadiumSuggestion {
+  id        String           @id @default(uuid()) @db.Uuid
+  mongoId   String?          @unique @map("mongo_id")
+  stadiumId String           @map("stadium_id") @db.Uuid
+  authorId  String           @map("author_id") @db.Uuid
+  field     String // uno de SUGGESTION_FIELDS
+  value     String           @db.VarChar(5000)
+  note      String           @default("") @db.VarChar(300)
+  status    SuggestionStatus @default(pending)
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  stadium Stadium @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
+  author  User    @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt(sort: Desc)])
+  @@map("stadium_suggestions")
+}
+
+// Auditoría del panel. Se borra sola a los 180 días (tarea diaria en el servidor).
+model AuditLog {
+  id            String      @id @default(uuid()) @db.Uuid
+  mongoId       String?     @unique @map("mongo_id")
+  actorId       String?     @map("actor_id") @db.Uuid
+  actorUsername String      @default("") @map("actor_username") // queda aunque se borre el usuario
+  action        AuditAction
+  entity        AuditEntity
+  entityId      String      @default("") @map("entity_id")
+  summary       String
+  fields        String[]    @default([]) // nombres de los campos modificados
+  changes       Json        @default("[]") // [{ field, before, after }] en texto corto
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([actorUsername])
+  @@map("audit_logs")
+}

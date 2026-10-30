@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  isText, escapeRegex, safeParse, isNumberInRange, textWithin, isEmailFormat, isUsernameFormat, isDateValue,
+  isText, escapeLike, safeParse, isNumberInRange, textWithin, isEmailFormat, isUsernameFormat, isDateValue,
 } from './validation.js';
 
 test('solo acepta texto como texto', () => {
@@ -10,9 +10,10 @@ test('solo acepta texto como texto', () => {
   assert.equal(isText(['a']), false);
 });
 
-test('escapa caracteres de regex para buscar literal', () => {
-  assert.equal(escapeRegex('a.*b'), 'a\\.\\*b');
-  assert.equal(new RegExp(escapeRegex('(x+)')).test('(x+)'), true);
+test('escapa los comodines de LIKE para buscar el texto literal', () => {
+  assert.equal(escapeLike('50%_off'), '50\\%\\_off');
+  assert.equal(escapeLike('a\\b'), 'a\\\\b');
+  assert.equal(escapeLike('normal'), 'normal');
 });
 
 test('safeParse distingue JSON válido, vacío y roto', () => {

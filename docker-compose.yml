@@ -1,0 +1,24 @@
+# PostgreSQL para desarrollo y tests (solo local). Levantar con: docker compose up -d
+# Puerto 5433 porque el 5432 ya está ocupado en esta máquina.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: giracanchera-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: giracanchera
+      POSTGRES_PASSWORD: giracanchera
+      POSTGRES_DB: giracanchera_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - giracanchera-pg:/var/lib/postgresql/data
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U giracanchera -d giracanchera_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  giracanchera-pg:

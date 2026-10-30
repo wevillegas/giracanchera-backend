@@ -2,8 +2,8 @@
 
 export const isText = (value) => typeof value === 'string';
 
-// Escapa los caracteres especiales de regex para buscar el texto literal
-export const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Escapa los comodines de LIKE (% y _) y la barra, para que una búsqueda encuentre el texto literal
+export const escapeLike = (text) => text.replace(/[\\%_]/g, '\\$&');
 
 // Error con status HTTP, para que errorHandler responda 400 en vez de 500
 export const httpError = (status, message) => Object.assign(new Error(message), { status });
@@ -29,8 +29,8 @@ export const isEmailFormat = (value) => isText(value) && value.length <= 254 && 
 // Usuario: 3 a 30 caracteres, letras, números, punto, guion bajo o guion
 export const isUsernameFormat = (value) => isText(value) && /^[a-zA-Z0-9_.-]{3,30}$/.test(value);
 
-// Id de Mongo en texto (24 hex): evita CastError y ids basura en listas
-export const isObjectId = (value) => isText(value) && /^[a-f\d]{24}$/i.test(value);
+// Id de un registro (UUID): evita consultas con ids basura (y el error de Postgres al comparar un uuid con texto)
+export const isId = (value) => isText(value) && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 export const isDateValue = (value) => !Number.isNaN(new Date(value).getTime());
 
