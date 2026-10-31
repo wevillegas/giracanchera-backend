@@ -1,86 +1,185 @@
-# giracanchera-backend
+# GiraCanchera · Backend
 
-API REST de GiraCanchera: autenticación, estadios, clubes, visitas (reseñas con fotos), perfiles, moderación y auditoría.
-Node + Express + PostgreSQL (Prisma) + Cloudinary.
+API REST de **GiraCanchera**, una bitácora de estadios de fútbol: los hinchas recorren un mapa del mundo, registran las canchas
+que visitaron, escriben reseñas con fotos y siguen a otros hinchas.
 
-## Requisitos
+🌐 **App:** https://giracanchera.vercel.app · 🎨 **Frontend:** [giracanchera-frontend](https://github.com/wevillegas/giracanchera-frontend)
 
-- Node 22.18 o superior (el cliente de Prisma se ejecuta como TypeScript sin compilar)
-- Docker (PostgreSQL local para desarrollo y tests)
-- Credenciales de Cloudinary (fotos de visitas, estadios y avatares)
+---
 
-## Setup
+## Qué hace
 
-```bash
-npm install                 # también genera el cliente de Prisma
-cp .env.example .env        # completar CLOUDINARY_*, JWT_SECRET
-npm run db:up               # PostgreSQL en Docker (puerto 5433): base de desarrollo y base de tests
-npm run db:migrate          # crea las tablas
-npm run dev
+- **Cuentas y sesiones:** registro, inicio de sesión con cookie httpOnly (JWT), cierre de sesión que invalida el token, cambio y
+  reinicio de contraseña, borrado de cuenta con todos sus datos.
+- **Estadios y clubes:** ficha completa (ubicación, capacidad, apodo, inauguración, superficie, medidas, historia, datos curiosos,
+  fotos), club dueño o estadio provincial, sugerencias de datos importadas de Wikidata para revisar.
+- **Reseñas:** puntuación de 1 a 10, texto, fecha, partido (local, visitante, resultado), gastos del día y hasta 4 fotos.
+- **Comunidad:** seguir usuarios, me gusta, reseñas guardadas, estadios por visitar, perfiles públicos y búsqueda.
+- **Moderación:** denuncias de reseñas, ocultar reseñas con motivo (el dueño ve el aviso), silenciar usuarios por días, borrar,
+  sugerencias de corrección de datos que un admin aprueba o descarta.
+- **Estadísticas:** públicas (rankings, hinchas por club, gasto típico) y analíticas internas para administradores.
+- **Auditoría:** cada acción de administración queda registrada (con el antes y después de cada campo), con filtros y exportación
+  a CSV. Los registros se borran solos a los 180 días.
+- **Roles:** usuario, admin y superadmin, con reglas sobre quién puede modificar a quién.
+
+## Tecnologías
+
+| Área | Tecnologías |
+|---|---|
+| Servidor | Node.js 22+, Express 5 |
+| Base de datos | PostgreSQL (Neon en producción, Docker en local), Prisma 7 (ORM y migraciones) |
+| Seguridad | JWT en cookie httpOnly, bcrypt, Helmet, rate limiting, control de origen contra CSRF |
+| Archivos | Cloudinary (fotos de reseñas, estadios, escudos y avatares), Multer |
+| Datos externos | Wikidata y Wikipedia (sugerencias para las fichas de estadios) |
+| Monitoreo | Sentry (errores del servidor, sin datos personales) |
+| Tests | node:test (unitarios y de punta a punta contra PostgreSQL) |
+| Despliegue | Render (servidor) + Neon (base de datos) |
+
+## Estructura
+
 ```
-
-El servidor levanta en `http://localhost:5000` (o el `PORT` que configures). Probar con `GET /api/health`.
+prisma/
+  schema.prisma          esquema de la base (13 tablas) y migraciones en prisma/migrations/
+src/
+  server.js              arranque, conexión a la base y limpieza diaria de la auditoría
+  app.js                 Express: seguridad, CORS, límites, rutas y manejo de errores
+  config/                Prisma, Cloudinary, Sentry, conexión con reintentos
+  routes/                rutas por recurso (auth, stadiums, visits, clubs, users, stats, audit)
+  controllers/           lógica de cada ruta
+  db/serialize.js        arma las respuestas JSON (forma estable para el frontend)
+  middlewares/           sesión y roles, subida de imágenes, errores
+  utils/                 validaciones, auditoría, Wikidata, scripts de datos de muestra
+scripts/backup-db.js     respaldo de la base de producción
+migration/               herramientas de la migración desde MongoDB (octubre 2026)
+```
 
 ## Base de datos
 
-- El esquema está en `prisma/schema.prisma` y las migraciones en `prisma/migrations/`.
-- `DATABASE_URL` es la conexión que usa la app. En producción (Neon) va la cadena **con pooling** (`-pooler`).
-- `DATABASE_URL_UNPOOLED` (opcional) es la conexión **directa**, la que usan las migraciones de Prisma. En Neon es obligatoria
-  para migrar: con pooling Prisma Migrate falla. En local no hace falta (se usa `DATABASE_URL`).
-- Usar `sslmode=verify-full` en las cadenas de Neon.
-- Los registros de auditoría de más de 180 días se borran solos (al iniciar el servidor y una vez por día).
+Esquema relacional en PostgreSQL con claves foráneas y borrado en cascada:
+
+- `users`, `follows` (quién sigue a quién), `wishlist` (por visitar)
+- `clubs`, `stadiums`, `stadium_photos`
+- `visits` (reseñas), `visit_images`, `visit_likes`, `saved_visits`
+- `reports` (denuncias), `stadium_suggestions`, `audit_logs`
+
+Los ids son UUID. La integridad la garantiza la base: no se puede reseñar un estadio que no existe, y al borrar un usuario o un
+estadio se borra en cascada todo lo que depende de él.
+
+## Puesta en marcha (local)
+
+Requisitos: Node 22.18 o superior, Docker y una cuenta de Cloudinary.
+
+```bash
+npm install                 # instala y genera el cliente de Prisma
+cp .env.example .env        # completar CLOUDINARY_* y JWT_SECRET
+npm run db:up               # PostgreSQL en Docker (puerto 5433): base de desarrollo y base de tests
+npm run db:migrate          # crea las tablas
+npm run seed                # (opcional) clubes y estadios de muestra
+npm run dev
+```
+
+El servidor levanta en `http://localhost:5000`. Probar con `GET /api/health`.
 
 ## Variables de entorno
 
-Ver `.env.example`. Ninguna tiene default salvo `PORT` y `FRONTEND_URL`.
+| Variable | Para qué |
+|---|---|
+| `DATABASE_URL` | Conexión a PostgreSQL que usa la app (en Neon, la cadena **con pooling**) |
+| `DATABASE_URL_UNPOOLED` | Conexión directa para las migraciones de Prisma (obligatoria en Neon; en local no hace falta) |
+| `TEST_DATABASE_URL` | Base para las pruebas de punta a punta (se vacía en cada corrida) |
+| `JWT_SECRET` | Firma de las sesiones (64 bytes aleatorios en producción) |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Subida de imágenes |
+| `FRONTEND_URL` | Origen permitido para CORS y para los pedidos que modifican datos |
+| `TRUST_PROXY` | Cantidad de proxies delante (2 en producción: Vercel + Render) |
+| `SENTRY_DSN` | Avisos de errores (vacío = desactivado) |
+
+En Neon usar `sslmode=verify-full` en las cadenas de conexión.
 
 ## Scripts
 
-- `npm run dev` — servidor con nodemon
-- `npm start` — servidor en modo producción
-- `npm test` — tests (las pruebas de punta a punta usan `TEST_DATABASE_URL` y vacían esa base en cada corrida)
-- `npm run db:up` / `npm run db:down` — levantar / bajar PostgreSQL en Docker
-- `npm run db:migrate` — crear una migración nueva a partir de cambios en el esquema (desarrollo)
-- `npm run db:deploy` — aplicar las migraciones pendientes (producción: con `DATABASE_URL_UNPOOLED`)
-- `npm run db:studio` — ver la base en el navegador
-- `npm run seed` — carga clubes y estadios de muestra (borra los que haya, y con ellos sus reseñas; no corre en producción)
-- `npm run seed:users` — usuarios de prueba (no corre en producción)
+| Comando | Qué hace |
+|---|---|
+| `npm run dev` | Servidor con recarga automática |
+| `npm start` | Servidor en producción |
+| `npm test` | Tests unitarios y de punta a punta |
+| `npm run db:up` / `npm run db:down` | Levantar / bajar PostgreSQL en Docker |
+| `npm run db:migrate` | Crear una migración a partir de cambios en el esquema |
+| `npm run db:deploy` | Aplicar migraciones pendientes (producción) |
+| `npm run db:studio` | Ver la base en el navegador |
+| `npm run backup:db` | Respaldo de la base de producción |
+| `npm run seed` / `npm run seed:users` | Datos de muestra (no corren en producción) |
+| `npm run import:wikidata` | Buscar sugerencias de datos en Wikidata |
 
-## Producción (Render + Neon)
+## API
 
-- Render en la región **Ohio**, junto a la base de Neon (`aws-us-east-2`).
-- Build: `npm install && npm run db:deploy` · Start: `npm start`.
-- Variables: `DATABASE_URL` (Neon con pooling), `DATABASE_URL_UNPOOLED` (Neon directa), `JWT_SECRET`, `CLOUDINARY_*`,
-  `FRONTEND_URL`, `NODE_ENV=production`, `TRUST_PROXY=2`.
+Todas las rutas empiezan con `/api`. 🔒 = requiere sesión · 🛡️ = solo administradores.
 
-## Respaldos de producción
+**Autenticación** — `POST /auth/register`, `POST /auth/login`, 🔒 `GET /auth/me`, 🔒 `POST /auth/logout`
 
-`npm run backup:db` guarda un respaldo completo de la base de producción en `backups/giracanchera-AAAA-MM-DD-HHMM.dump`
-(con `pg_dump` dentro de Docker; la conexión la saca la herramienta de Neon, con la sesión iniciada: `npx neon@latest login`).
-Hacerlo una vez por semana y guardar una copia fuera de la PC (tiene datos personales; `backups/` no va al repo).
+**Estadios**
+- `GET /stadiums`, `GET /stadiums/:id`
+- 🛡️ `POST /stadiums`, `PUT /stadiums/:id`, `DELETE /stadiums/:id`, `POST /stadiums/image`
+- 🛡️ `GET /stadiums/drafts`, `POST|GET /stadiums/import-wikidata` (sugerencias de Wikidata)
+- 🔒 `POST /stadiums/:id/suggestions` · 🛡️ `GET /stadiums/suggestions`, `PATCH /stadiums/suggestions/:id`
 
-Para restaurar, **nunca directo sobre production**: crear una rama nueva en Neon (o una base local) y cargar ahí el respaldo,
-revisar que esté bien y recién después decidir:
+**Reseñas (visitas)**
+- `GET /visits/stadium/:stadiumId`, `GET /visits/user/:userId`
+- 🔒 `POST /visits`, `PUT /visits/:id`, `DELETE /visits/:id` (con fotos, multipart)
+- 🔒 `POST /visits/:id/like`, `POST /visits/:id/save`, `POST /visits/:id/report`, `GET /visits/saved`, `GET /visits/liked`
+- 🛡️ `GET /visits/admin/all`, `PATCH /visits/admin/:id/hidden`, `DELETE /visits/admin/:id`, `GET /visits/reports`, `PATCH /visits/reports/:id`
+
+**Usuarios**
+- `GET /users/:id` (perfil público)
+- 🔒 `GET|PUT /users/profile`, `GET /users/search`, `GET /users/me/stats`, `PUT /users/me/password`, `DELETE /users/me`
+- 🔒 `POST /users/follow/:userId`, `POST /users/want-to-visit/:stadiumId`
+- 🛡️ `GET /users/admin/all`, `GET /users/admin/:id/activity`, `PUT /users/admin/:id`, `DELETE /users/admin/:id`,
+  `POST /users/admin/:id/reset-password`
+
+**Clubes** — `GET /clubs`, `GET /clubs/list` · 🛡️ `POST /clubs`, `PUT /clubs/:id`, `DELETE /clubs/:id`
+
+**Estadísticas** — `GET /stats/public` · 🛡️ `GET /stats/admin`
+
+**Auditoría** — 🛡️ `GET /audit`, `GET /audit/actors`, `GET /audit/export` (CSV)
+
+## Seguridad
+
+- Sesión en cookie **httpOnly** (`SameSite=Lax`, `Secure` en producción): el JavaScript de la página no puede leerla.
+- Cerrar sesión, cambiar la contraseña o cambiar de rol invalida los tokens anteriores.
+- Los pedidos que modifican datos solo se aceptan desde el frontend (control de `Origin`), además de CORS.
+- Límites de pedidos por IP, más estrictos en login y registro; comparación de contraseñas en tiempo constante.
+- Validación de todos los datos de entrada; búsquedas con comodines escapados; solo imágenes de Cloudinary.
+- Cabeceras de seguridad con Helmet. Los errores 500 no exponen detalles internos.
+
+## Tests
+
+```bash
+npm test
+```
+
+49 tests: validaciones, sesión y roles, auditoría, y pruebas de punta a punta que recorren el flujo completo (registro, reseñas,
+me gusta, denuncias, moderación, sugerencias, silencio, reinicio y cambio de contraseña, borrado en cascada) contra una base
+PostgreSQL de prueba en Docker.
+
+## Producción
+
+- **Render** (región Ohio, junto a la base): build `npm install && npm run db:deploy`, start `npm start`.
+- **Neon**: PostgreSQL con ramas; la rama `production` es la base real.
+- Respaldo semanal recomendado con `npm run backup:db`. Para restaurar, siempre en una rama nueva de Neon, nunca directo sobre
+  production:
 
 ```bash
 docker run --rm -i postgres:18-alpine pg_restore --no-owner --no-privileges -d "<cadena directa de la rama nueva>" < backups/giracanchera-....dump
 ```
 
-## Migración desde MongoDB (octubre 2026)
+## Historia: de MongoDB a PostgreSQL
 
-La carpeta `migration/` tiene lo que se usó para pasar de MongoDB a PostgreSQL: el respaldo de Mongo (`backup-mongo.js`), la copia
-de los datos (`migrate-data.js`, repetible: el UUID de cada registro sale de su id de Mongo) y la comparación de las respuestas de
-la API antes y después (`snapshot-api.js`, `compare-snapshots.js`). Los respaldos y las grabaciones no se suben al repo.
-La columna `mongo_id` de las tablas guarda el id original; se puede borrar cuando ya no haga falta volver a Mongo.
+El proyecto nació con MongoDB y Mongoose. En octubre de 2026 la base pasó a PostgreSQL, porque los datos son muy relacionales
+(usuarios, estadios, reseñas, seguidores) y la integridad referencial evita datos inconsistentes. Para verificar que nada
+cambiara, se grabaron las respuestas de toda la API antes de migrar y se compararon con las de después: 398 de 400 idénticas
+(las otras 2 eran empates que Mongo ordenaba al azar). La migración se ensayó en una rama de Neon antes de aplicarla en
+producción. Las herramientas usadas están en `migration/`.
 
-## Rutas principales
+---
 
-- `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`
-- `GET/POST /api/stadiums`, `GET /api/stadiums/:id`
-- `GET/POST/PUT/DELETE /api/visits` (requiere sesión)
-- `GET/POST /api/clubs`
-- `GET/PUT /api/users/profile`, `GET /api/users/:id`, `POST /api/users/want-to-visit/:stadiumId`, `POST /api/users/follow/:userId`
-
-## Repo hermano
-
-El frontend vive en un repo separado: [giracanchera-frontend](https://github.com/wevillegas/giracanchera-frontend).
+Desarrollado por **Wenceslao José Villegas** · Ingeniería Informática, UNSTA ·
+[LinkedIn](https://www.linkedin.com/in/wenceslaojosevillegas/) · [GitHub](https://github.com/wevillegas)
