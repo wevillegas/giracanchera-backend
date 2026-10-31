@@ -89,7 +89,7 @@ app.use('/api/audit', auditRoutes);
 
 app.use(notFound);
 // Errores 5xx a Sentry (si está activo); después responde el manejador de siempre
-if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
+if (Sentry.isInitialized()) Sentry.setupExpressErrorHandler(app);
 app.use(errorHandler);
 
 export default app;

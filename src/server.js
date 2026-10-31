@@ -4,8 +4,6 @@
 // dotenv.config() se llama como una instrucción normal más abajo, corre
 // demasiado tarde y Cloudinary queda configurado con variables undefined.
 import 'dotenv/config';
-// Sentry se inicia antes de cargar la app (después de dotenv, que trae SENTRY_DSN)
-import './config/sentry.js';
 
 import app from './app.js';
 import connectDB, { disconnectDB } from './config/db.js';
