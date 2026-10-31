@@ -254,6 +254,38 @@ test('admin: silenciar y cambio de rol', { skip }, async () => {
   assert.equal(r.status, 200, 'ya es admin');
 });
 
+test('admin: reiniciar la contraseña de un usuario', { skip }, async () => {
+  const carla = client();
+  let r = await carla.post('/auth/register', { username: 'carla', email: 'carla@x.com', password: 'clave1234' });
+  const carlaId = r.data.user._id;
+
+  r = await admin.post(`/users/admin/${carlaId}/reset-password`);
+  assert.equal(r.status, 200);
+  const temp = r.data.tempPassword;
+  assert.match(temp, /^[A-Za-z0-9]{12}$/);
+
+  r = await carla.get('/auth/me');
+  assert.equal(r.status, 401, 'cierra las sesiones abiertas del usuario');
+  r = await carla.post('/auth/login', { username: 'carla', password: 'clave1234' });
+  assert.equal(r.status, 401, 'la contraseña vieja deja de valer');
+  r = await carla.post('/auth/login', { username: 'carla', password: temp });
+  assert.equal(r.status, 200, 'entra con la temporal');
+  r = await carla.put('/users/me/password', { currentPassword: temp, newPassword: 'nueva9876' });
+  assert.equal(r.status, 200, 'y la cambia por una propia');
+  await carla.post('/auth/login', { username: 'carla', password: 'nueva9876' }); // cambiar la clave cerró su sesión
+
+  r = await carla.post(`/users/admin/${ids.ana}/reset-password`);
+  assert.equal(r.status, 403, 'un usuario común no puede reiniciar contraseñas');
+  r = await admin.post(`/users/admin/${ids.admin}/reset-password`);
+  assert.equal(r.status, 400, 'la propia se cambia desde el perfil');
+  r = await beto.post(`/users/admin/${ids.admin}/reset-password`);
+  assert.equal(r.status, 403, 'nadie reinicia la de un superadmin');
+
+  r = await admin.get('/audit?entity=user');
+  assert.ok(r.data.logs.some((log) => log.summary === 'Reinició la contraseña de @carla'));
+  assert.ok(!JSON.stringify(r.data).includes(temp), 'la temporal no queda en la auditoría');
+});
+
 test('contraseña, cierre de sesión y borrado en cascada', { skip }, async () => {
   let r = await ana.put('/users/me/password', { currentPassword: 'clave1234', newPassword: 'nueva1234' });
   assert.equal(r.status, 200);

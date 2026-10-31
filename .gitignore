@@ -6,3 +6,5 @@ src/generated/
 # Respaldo de Mongo y grabaciones de la API: tienen datos personales, no van al repo
 migration/backup/
 migration/snapshots/
+# Respaldos de la base de producción (npm run backup:db): tienen datos personales
+backups/

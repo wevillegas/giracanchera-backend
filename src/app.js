@@ -11,6 +11,7 @@ import userRoutes from './routes/userRoutes.js';
 import statsRoutes from './routes/statsRoutes.js';
 import auditRoutes from './routes/auditRoutes.js';
 import { notFound, errorHandler } from './middlewares/errorMiddleware.js';
+import Sentry from './config/sentry.js';
 
 const app = express();
 
@@ -87,6 +88,8 @@ app.use('/api/stats', statsRoutes);
 app.use('/api/audit', auditRoutes);
 
 app.use(notFound);
+// Errores 5xx a Sentry (si está activo); después responde el manejador de siempre
+if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
 app.use(errorHandler);
 
 export default app;

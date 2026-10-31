@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { isText, escapeLike, textWithin, isCloudinaryUrl, isUsernameFormat, isEmailFormat, isPasswordFormat, isId } from '../utils/validation.js';
 import prisma from '../config/prisma.js';
@@ -386,6 +387,48 @@ export const adminUpdateUser = async (req, res, next) => {
     const before = { ...target, clubHincha: target.clubHinchaId };
     logAudit(req.user, { action: 'update', entity: 'user', entityId: user.id, summary: `Editó al usuario @${user.username}`, fields: Object.keys(updates), changes: diffChanges(before, updates) });
     res.json(accountWithIds(user));
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Contraseña temporal legible (sin caracteres que se confunden) que cumple el formato: letras y al menos un número
+const TEMP_ALPHABET = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export function tempPassword(length = 12) {
+  for (;;) {
+    const value = Array.from(crypto.randomBytes(length), (byte) => TEMP_ALPHABET[byte % TEMP_ALPHABET.length]).join('');
+    if (isPasswordFormat(value)) return value;
+  }
+}
+
+// Admin: reinicia la contraseña de un usuario que la olvidó. Devuelve una temporal (una sola vez: no se guarda en
+// ningún lado sin cifrar) para que el admin se la pase; el usuario la cambia después desde "editar perfil".
+// Las sesiones abiertas de ese usuario se cierran. Mismos límites que editar: un admin no toca a otro admin.
+export const adminResetPassword = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (id === req.user.id) {
+      return res.status(400).json({ message: 'Para tu propia cuenta usá "Cambiar contraseña" en tu perfil' });
+    }
+    const target = isId(id) ? await prisma.user.findUnique({ where: { id }, select: { id: true, rol: true, username: true } }) : null;
+    if (!target) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+    if (target.rol === 'superadmin') {
+      return res.status(403).json({ message: 'No se puede reiniciar la contraseña de un superadministrador' });
+    }
+    if (target.rol === 'admin' && req.user.rol !== 'superadmin') {
+      return res.status(403).json({ message: 'No podés reiniciar la contraseña de otro administrador' });
+    }
+
+    const password = tempPassword();
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { password: await hashPassword(password), tokenVersion: { increment: 1 } },
+    });
+
+    logAudit(req.user, { action: 'update', entity: 'user', entityId: target.id, summary: `Reinició la contraseña de @${target.username}`, fields: ['password'] });
+    res.json({ tempPassword: password });
   } catch (error) {
     next(error);
   }

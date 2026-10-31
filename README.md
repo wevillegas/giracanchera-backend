@@ -53,6 +53,19 @@ Ver `.env.example`. Ninguna tiene default salvo `PORT` y `FRONTEND_URL`.
 - Variables: `DATABASE_URL` (Neon con pooling), `DATABASE_URL_UNPOOLED` (Neon directa), `JWT_SECRET`, `CLOUDINARY_*`,
   `FRONTEND_URL`, `NODE_ENV=production`, `TRUST_PROXY=2`.
 
+## Respaldos de producción
+
+`npm run backup:db` guarda un respaldo completo de la base de producción en `backups/giracanchera-AAAA-MM-DD-HHMM.dump`
+(con `pg_dump` dentro de Docker; la conexión la saca la herramienta de Neon, con la sesión iniciada: `npx neon@latest login`).
+Hacerlo una vez por semana y guardar una copia fuera de la PC (tiene datos personales; `backups/` no va al repo).
+
+Para restaurar, **nunca directo sobre production**: crear una rama nueva en Neon (o una base local) y cargar ahí el respaldo,
+revisar que esté bien y recién después decidir:
+
+```bash
+docker run --rm -i postgres:18-alpine pg_restore --no-owner --no-privileges -d "<cadena directa de la rama nueva>" < backups/giracanchera-....dump
+```
+
 ## Migración desde MongoDB (octubre 2026)
 
 La carpeta `migration/` tiene lo que se usó para pasar de MongoDB a PostgreSQL: el respaldo de Mongo (`backup-mongo.js`), la copia

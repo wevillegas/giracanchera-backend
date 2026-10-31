@@ -10,6 +10,7 @@ import {
   adminUpdateUser,
   adminUserActivity,
   adminDeleteUser,
+  adminResetPassword,
   deleteMe,
   getMyStats,
   changePassword,
@@ -29,6 +30,7 @@ router.get('/admin/all', protect, adminOnly, getAllUsers);
 router.get('/admin/:id/activity', protect, adminOnly, adminUserActivity);
 router.put('/admin/:id', protect, adminOnly, adminUpdateUser);
 router.delete('/admin/:id', protect, adminOnly, adminDeleteUser);
+router.post('/admin/:id/reset-password', protect, adminOnly, adminResetPassword);
 router.get('/:id', optionalProtect, getPublicProfile);
 router.post('/want-to-visit/:stadiumId', protect, toggleWantToVisit);
 router.post('/follow/:userId', protect, toggleFollow);

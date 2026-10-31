@@ -19,7 +19,8 @@
     "db:migrate": "prisma migrate dev && prisma generate",
     "db:studio": "prisma studio",
     "db:deploy": "prisma migrate deploy",
-    "migrate:data": "node migration/migrate-data.js"
+    "migrate:data": "node migration/migrate-data.js",
+    "backup:db": "node scripts/backup-db.js"
   },
   "repository": {
     "type": "git",
@@ -35,6 +36,7 @@
   "dependencies": {
     "@prisma/adapter-pg": "7.10.1",
     "@prisma/client": "7.10.1",
+    "@sentry/node": "11.8.0",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.11.0",
     "cors": "^2.8.6",
