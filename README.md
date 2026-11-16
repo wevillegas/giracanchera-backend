@@ -1,9 +1,11 @@
 # GiraCanchera · Backend
 
+[![QA](https://github.com/wevillegas/giracanchera-qa/actions/workflows/qa.yml/badge.svg?branch=main)](https://github.com/wevillegas/giracanchera-qa/actions/workflows/qa.yml)
+
 API REST de **GiraCanchera**, una bitácora de estadios de fútbol: los hinchas recorren un mapa del mundo, registran las canchas
 que visitaron, escriben reseñas con fotos y siguen a otros hinchas.
 
-🌐 **App:** https://giracanchera.vercel.app · 🎨 **Frontend:** [giracanchera-frontend](https://github.com/wevillegas/giracanchera-frontend)
+🌐 **App:** https://giracanchera.vercel.app · 🎨 **Frontend:** [giracanchera-frontend](https://github.com/wevillegas/giracanchera-frontend) · 🧪 **QA:** [giracanchera-qa](https://github.com/wevillegas/giracanchera-qa)
 
 ---
 
@@ -159,6 +161,17 @@ npm test
 49 tests: validaciones, sesión y roles, auditoría, y pruebas de punta a punta que recorren el flujo completo (registro, reseñas,
 me gusta, denuncias, moderación, sugerencias, silencio, reinicio y cambio de contraseña, borrado en cascada) contra una base
 PostgreSQL de prueba en Docker.
+
+## QA y testing
+
+Además de estos tests, el repo [giracanchera-qa](https://github.com/wevillegas/giracanchera-qa) prueba esta API desde afuera,
+como caja negra, en cada push y pull request (GitHub Actions):
+
+- **API con Postman/Newman:** 54 requests y 371 aserciones sobre auth, estadios, reseñas, usuarios y permisos por rol, con
+  esquemas JSON, casos negativos (400/401/403/404) y un login data-driven con CSV.
+- **E2E con Playwright:** los flujos principales en el navegador (mapa, búsqueda, login, reseña, vista mobile) contra esta API.
+
+Corre contra una base PostgreSQL efímera con las migraciones de este repo y un seed determinista. El estado está en el badge.
 
 ## Producción
 
