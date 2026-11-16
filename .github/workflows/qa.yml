@@ -1,0 +1,24 @@
+# Pipeline de QA (Newman + Playwright) del repo wevillegas/giracanchera-qa, con la versión de este repo a probar.
+# En un PR, el check aparece en el PR antes de mergear: si está en rojo, no se mergea (y no se despliega).
+name: QA
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# El workflow de QA declara un job que publica en GitHub Pages: el que llama tiene que poder otorgar esos
+# permisos aunque acá ese job nunca corre (solo publica desde el repo de QA)
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  qa:
+    uses: wevillegas/giracanchera-qa/.github/workflows/qa.yml@main
+    with:
+      # El commit del PR (o el del push a main) de este repo; del otro repo, su main
+      back_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      front_ref: main
+    secrets: inherit
